@@ -2,6 +2,7 @@
 
 Evaluates LLM-agent biopsy-decision form responses against pathologist
 ground-truth using a hybrid deterministic + LLM scoring pipeline.
+![Evaluation Pipeline Overview](docs/evaluation_pipeline.png)
 
 ---
 
