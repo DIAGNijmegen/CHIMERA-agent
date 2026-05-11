@@ -1,0 +1,12 @@
+.deepeval/
+__pycache__/
+*.pyc
+
+# Generated outputs — do not commit evaluation results
+results/
+
+# Local model weight cache (can be gigabytes)
+models/
+
+# Local environment overrides — contains site-specific paths
+.env

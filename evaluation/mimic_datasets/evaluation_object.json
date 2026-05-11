@@ -1,0 +1,324 @@
+{
+  "source": "LLM agent (mimic-pathologist) form responses. Same schema as target.json (1.4). Clear cases match the target; borderline cases reflect realistic LLM disagreement patterns so the evaluator has signal across decision/confidence/weights/tools/rationale.",
+  "schema_version": "1.4",
+  "biopsy_decision": [
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_01",
+      "patient": {"id": "BX_01", "psa_ng_ml": 8.5, "age_years": 58},
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "important",
+        "cspca": "important", "age": "noted", "fh": "not_used", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:05:31.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:05:32.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:05:33.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 4 indicates targeted biopsy regardless of PSA density. Suspicious DRE and elevated PSA density (0.25) add support."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_02",
+      "patient": {"id": "BX_02", "psa_ng_ml": 6.2, "age_years": 52},
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "important",
+        "cspca": "decisive", "age": "noted", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:10:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:10:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-fh",   "label": "Family history",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:10:05.500Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:10:07.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 5 with high PSA density (0.22), positive family history, and high csPCa probability \u2014 unambiguous biopsy indication."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_03",
+      "patient": {"id": "BX_03", "psa_ng_ml": 4.1, "age_years": 55},
+      "biopsy_decision": "no",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:12:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:12:03.500Z"}
+      ],
+      "repeat_test": "PSA repeat in 12 months.",
+      "free_text": "PI-RADS \u2264 2 + PSA density < 0.20 + no family history \u2014 all conditions met to omit biopsy. Offer PSA monitoring."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_04",
+      "patient": {"id": "BX_04", "psa_ng_ml": 5.5, "age_years": 60},
+      "biopsy_decision": "no",
+      "confidence": "borderline",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "noted", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:14:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:14:03.500Z"}
+      ],
+      "repeat_test": "Repeat MRI in 12-18 months.",
+      "free_text": "PI-RADS 2 is a strongly negative MRI and PSA density 0.18 is below 0.20. Family history is a risk factor but a clearly negative MRI lowers the pre-test probability \u2014 PSA + MRI surveillance is reasonable."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_05",
+      "patient": {"id": "BX_05", "psa_ng_ml": 7.0, "age_years": 57},
+      "biopsy_decision": "yes",
+      "confidence": "borderline",
+      "variable_weights": {
+        "pirads": "important", "psad": "important", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "noted", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:16:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:16:03.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 3 with PSA density 0.11. PSAD just above the 0.10 threshold and a real PI-RADS 3 lesion \u2014 biopsy is the safer choice."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_06",
+      "patient": {"id": "BX_06", "psa_ng_ml": 5.8, "age_years": 54},
+      "biopsy_decision": "no",
+      "confidence": "uncertain",
+      "variable_weights": {
+        "pirads": "important", "psad": "important", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:18:01.500Z"}
+      ],
+      "repeat_test": "Repeat PSA in 6 months.",
+      "free_text": "PI-RADS 3 with PSAD 0.08 < 0.10 and no family history. Both criteria for omitting biopsy are met but PI-RADS 3 always carries some residual risk; surveillance is reasonable."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_07",
+      "patient": {"id": "BX_07", "psa_ng_ml": 9.2, "age_years": 64},
+      "biopsy_decision": "yes",
+      "confidence": "borderline",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "important", "dre": "important",
+        "cspca": "important", "age": "noted", "fh": "not_used", "vol": "noted", "bx": "noted",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-path", "label": "Pathology report",       "value": "section", "via": "tool_call", "ts": "2026-05-06T16:20:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:20:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:20:05.500Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:20:07.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 4 with rising PSA and prior negative biopsy 2 years ago \u2014 targeted re-biopsy of the new MRI lesion is appropriate. A previously negative systematic biopsy does not exclude an MRI-visible lesion."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_08",
+      "patient": {"id": "BX_08", "psa_ng_ml": 12.0, "age_years": 86},
+      "biopsy_decision": "yes",
+      "confidence": "borderline",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "important", "dre": "important",
+        "cspca": "important", "age": "noted", "fh": "not_used", "vol": "noted", "bx": "not_used",
+        "comorbidity": "noted"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:22:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:22:03.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 5 with elevated PSA, high PSAD and suspicious DRE \u2014 biopsy is indicated to confirm the imaging finding."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_09",
+      "patient": {"id": "BX_09", "psa_ng_ml": 3.0, "age_years": 49},
+      "biopsy_decision": "no",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:24:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:24:03.500Z"}
+      ],
+      "repeat_test": "Routine PSA in 24 months.",
+      "free_text": "PI-RADS 1, low PSA, low PSAD, no family history \u2014 no biopsy indication; routine surveillance."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_10",
+      "patient": {"id": "BX_10", "psa_ng_ml": 13.2, "age_years": 66},
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "important", "dre": "important",
+        "cspca": "important", "age": "noted", "fh": "not_used", "vol": "noted", "bx": "important",
+        "comorbidity": "noted"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:26:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:26:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-path", "label": "Pathology report",       "value": "section", "via": "tool_call", "ts": "2026-05-06T16:26:05.500Z"}
+      ],
+      "repeat_test": "Repeat PSA in 3 months.",
+      "free_text": "PI-RADS 4, PSA 13.2, PSAD 0.14, palpable nodus and prior positive biopsy \u2014 strong indication for re-biopsy."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_11",
+      "patient": {"id": "BX_11", "psa_ng_ml": 7.8, "age_years": 50},
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "important",
+        "cspca": "noted", "age": "not_used", "fh": "not_used", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:28:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:28:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-fh",   "label": "Family history",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:28:05.500Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-path", "label": "Pathology report",       "value": "section", "via": "tool_call", "ts": "2026-05-06T16:28:07.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 4 with suspicious DRE and elevated PSAD. Biopsy indicated. Checked family history and prior pathology as additional context."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_12",
+      "patient": {"id": "BX_12", "psa_ng_ml": 4.8, "age_years": 61},
+      "biopsy_decision": "no",
+      "confidence": "borderline",
+      "variable_weights": {
+        "pirads": "important", "psad": "decisive", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:30:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:30:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:30:05.500Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-fh",   "label": "Family history",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:30:07.500Z"},
+        {"page": "decision", "order": 5, "key": "section_s3-comorb","label": "Comorbidities",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:30:09.500Z"}
+      ],
+      "repeat_test": "Repeat PSA + MRI in 12 months.",
+      "free_text": "PI-RADS 3 with PSAD 0.07 < 0.10, benign DRE, no family history, no significant comorbidities. Biopsy safely deferred."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_13",
+      "patient": {"id": "BX_13", "psa_ng_ml": 15.4, "age_years": 56},
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "noted", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "not_used", "vol": "not_used", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:32:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:32:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:32:05.500Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-path", "label": "Pathology report",       "value": "section", "via": "tool_call", "ts": "2026-05-06T16:32:07.500Z"},
+        {"page": "decision", "order": 5, "key": "section_s3-fh",   "label": "Family history",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:32:09.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 5 is an absolute biopsy indication. Gathered full workup context before deciding."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_14",
+      "patient": {"id": "BX_14", "psa_ng_ml": 6.1, "age_years": 63},
+      "biopsy_decision": "yes",
+      "confidence": "borderline",
+      "variable_weights": {
+        "pirads": "important", "psad": "decisive", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:34:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:34:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-fh",   "label": "Family history",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:34:05.500Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:34:07.500Z"},
+        {"page": "decision", "order": 5, "key": "section_s3-path", "label": "Pathology report",       "value": "section", "via": "tool_call", "ts": "2026-05-06T16:34:09.500Z"},
+        {"page": "decision", "order": 6, "key": "section_s3-comorb","label": "Comorbidities",         "value": "section", "via": "tool_call", "ts": "2026-05-06T16:34:11.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 3 with PSAD 0.12 above the 0.10 threshold and positive family history. Biopsy warranted. Reviewed all available sections to be thorough."
+    },
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_15",
+      "patient": {"id": "BX_15", "psa_ng_ml": 9.1, "age_years": 59},
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "important",
+        "cspca": "noted", "age": "not_used", "fh": "not_used", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "tool_call", "ts": "2026-05-06T16:36:01.500Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "tool_call", "ts": "2026-05-06T16:36:03.500Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-path", "label": "Pathology report",       "value": "section", "via": "tool_call", "ts": "2026-05-06T16:36:05.500Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "PI-RADS 4 with PSAD 0.21 and suspicious DRE. Biopsy clearly indicated. Checked prior pathology for completeness even though there is no prior biopsy on record."
+    }
+  ]
+}
