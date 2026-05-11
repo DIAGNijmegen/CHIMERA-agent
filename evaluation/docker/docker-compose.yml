@@ -1,0 +1,92 @@
+# Two-service stack:
+#   ollama : runs the Gemma judge model on the local RTX 3090 GPU
+#   eval   : python container that builds the DAG and queries the ollama service
+#
+# Quick start (from the repo root):
+#   docker compose -f docker/docker-compose.yml up -d ollama
+#   docker compose -f docker/docker-compose.yml run --rm eval
+#
+# The ollama service auto-pulls `gemma4:e4b` on first run (~9.6 GB) and runs it
+# on GPU 0 (the local RTX 3090). Model weights are cached on the host at
+# /mnt/mebprostateai/projects/patho_vlm/pretrained_models so they survive
+# `docker compose down -v` and are shared across users / projects.
+#
+# To use the larger 26B MoE variant (18 GB, still fits a 24 GB 3090):
+#   JUDGE_MODEL=gemma4:26b docker compose -f docker/docker-compose.yml run --rm eval
+
+services:
+
+  ollama:
+    image: ollama/ollama:latest
+    # Container name is namespaced per-user to avoid clashes on a shared host.
+    container_name: ${COMPOSE_NAME_PREFIX:-deepeval}_ollama_${USER:-anon}
+    restart: unless-stopped
+    # NOTE: ollama runs as the container's root user. The model blobs on the
+    # host bind-mount will therefore be root-owned, which is fine — only the
+    # ollama container needs to read them. Result files (./results/) are
+    # produced by the `eval` service, which DOES run as your host user.
+    ports:
+      # Host port is configurable so multiple users / projects don't clash on 11434.
+      - "${OLLAMA_HOST_PORT:-11434}:11434"
+    volumes:
+      # Persist Ollama model weights on the host so they survive container
+      # restarts and are shared across runs.  OLLAMA_MODELS_DIR is always set
+      # to an absolute path by the Makefile; ../models is the fallback when
+      # docker compose is invoked directly (resolves to <repo-root>/models/).
+      - ${OLLAMA_MODELS_DIR:-../models}:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_HOST=0.0.0.0
+      # Belt-and-suspenders: also restrict CUDA visibility inside the container.
+      - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_ID:-0}
+      - CUDA_VISIBLE_DEVICES=${GPU_DEVICE_ID:-0}
+    # GPU access. Pick a free GPU with `nvidia-smi` and export GPU_DEVICE_ID=<n>
+    # before launching. Requires the NVIDIA Container Toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_DEVICE_ID:-0}"]
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  eval:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: deepeval-dag:latest
+    # Container name namespaced per-user to avoid clashes on a shared host.
+    container_name: ${COMPOSE_NAME_PREFIX:-deepeval}_dag_${USER:-anon}
+    # Run as the host user so result files (PNGs, JSON) are owned by you.
+    # HOST_UID / HOST_GID should be exported by the caller (or via .env):
+    #   export HOST_UID=$(id -u) HOST_GID=$(id -g)
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      # Mount the repository at /app so code/data edits are picked up live.
+      - ../:/app
+      # Persist DAG PNGs + result summaries on the host.
+      - ../results:/app/results
+      # Mount host user/group databases read-only so the in-container UID
+      # resolves to a real username (avoids "I have no name!" / HOME issues
+      # for tools like graphviz, uv, deepeval cache, etc.).
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+    working_dir: /app
+    environment:
+      - HOME=/tmp
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - JUDGE_MODEL=${JUDGE_MODEL:-gemma4:e4b}
+      - EVAL_OUTPUT_DIR=/app/results
+      - OPENAI_API_KEY=dummy-key-not-used
+      - DEEPEVAL_TELEMETRY_OPT_OUT=YES
+    # Default: run the evaluation. Override with `docker compose run eval bash` for shell access.
+    command: ["python", "/app/evaluate.py"]
