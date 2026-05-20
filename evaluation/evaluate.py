@@ -85,6 +85,10 @@ OUTPUT_DIR = Path(os.getenv(
     "EVAL_OUTPUT_DIR",
     str(ROOT / "results"),
 ))
+SECTION_MAPPING_FILE = Path(os.getenv(
+    "SECTION_MAPPING_FILE",
+    str(ROOT / "mimic_datasets" / "section_variable_mapping.json"),
+))
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemma4:e4b")
@@ -249,6 +253,100 @@ def important_decisive_factor_score(gt: dict, pred: dict) -> float | None:
     if not gt_set and not pred_set:
         return 1.0
     return _set_f1(gt_set, pred_set)
+
+
+# --------------------------------------------------------------------------- #
+# Section-variable grounding
+# --------------------------------------------------------------------------- #
+
+_SECTION_VAR_MAPPING: dict = {}
+
+
+def _get_section_var_mapping() -> dict:
+    global _SECTION_VAR_MAPPING
+    if not _SECTION_VAR_MAPPING:
+        if SECTION_MAPPING_FILE.exists():
+            _SECTION_VAR_MAPPING = load_json(SECTION_MAPPING_FILE)
+        else:
+            print(
+                f"[warning] section_variable_mapping.json not found at "
+                f"{SECTION_MAPPING_FILE}; section grounding check disabled"
+            )
+    return _SECTION_VAR_MAPPING
+
+
+def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
+    """
+    Penalise variables the agent weighted above 'not_used' whose primary
+    source section was never revealed in the agent's own reveal_sequence.
+
+    A variable is 'grounded' if:
+      - It is an always-available variable (psa, age) readable from the
+        patient card without any section reveal, OR
+      - Its primary_sections list is empty, OR
+      - At least one of its primary_sections appears in the agent's
+        reveal_sequence.
+
+    Score = n_grounded / (n_grounded + n_ungrounded)
+
+    Returns (None, details) when no variable is actively weighted (no
+    penalisation possible).
+    """
+    mapping = _get_section_var_mapping()
+    if not mapping:
+        return None, {"grounded_variables": [], "ungrounded_variables": [],
+                      "total_weighted": 0, "revealed_sections": []}
+
+    var_to_sections = mapping.get("variable_to_sections", {})
+    always_available = set(
+        mapping.get("always_available_variables", {}).get("variables", [])
+    )
+
+    revealed = set(_reveal_keys(pred))
+    weights = pred.get("variable_weights") or {}
+
+    grounded: list[str] = []
+    ungrounded: list[str] = []
+
+    for var, weight_val in weights.items():
+        w = _norm_weight(weight_val)
+        if w is None or w == "not_used":
+            continue  # variable not actively used — skip
+
+        # Always-available variables (psa, age) need no section reveal.
+        if var in always_available:
+            grounded.append(var)
+            continue
+
+        var_info = var_to_sections.get(var, {})
+        primary_sections = var_info.get("primary_sections", [])
+        always_avail_flag = var_info.get("always_available_baseline", False)
+
+        if always_avail_flag or not primary_sections:
+            grounded.append(var)
+            continue
+
+        # Grounded if at least one primary section was revealed.
+        if any(s in revealed for s in primary_sections):
+            grounded.append(var)
+        else:
+            ungrounded.append(var)
+
+    total = len(grounded) + len(ungrounded)
+    if total == 0:
+        return None, {
+            "grounded_variables": [],
+            "ungrounded_variables": [],
+            "total_weighted": 0,
+            "revealed_sections": sorted(revealed),
+        }
+
+    return len(grounded) / total, {
+        "grounded_variables": sorted(grounded),
+        "ungrounded_variables": sorted(ungrounded),
+        "total_weighted": total,
+        "revealed_sections": sorted(revealed),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -562,6 +660,7 @@ def evaluate_case(
         "variable_weight_score": None,
         "important_decisive_factor_score": None,
         "tool_score": None,
+        "section_grounding_score": None,
         "rationale_score": None,
         "reason": "",
     }
@@ -594,6 +693,7 @@ def evaluate_case(
     vws = variable_weight_score(gt, pred)
     fs = important_decisive_factor_score(gt, pred)
     ts, t_reason = compute_tool_score(gt, pred, tool_metric)
+    sgs, sg_details = section_grounding_score(pred)
 
     rs, r_reason = (None, "rationale judge disabled")
     if rationale_judge is not None:
@@ -603,24 +703,27 @@ def evaluate_case(
     base["variable_weight_score"] = vws
     base["important_decisive_factor_score"] = fs
     base["tool_score"] = ts
+    base["section_grounding_score"] = sgs
     base["rationale_score"] = rs
 
     # Weighted composite. Drop rationale weight when unavailable and
     # renormalise the remaining weights.
     components = {
-        "confidence": (cs, 0.25),
-        "var_weight": (vws, 0.30),
-        "factor_f1":  (fs, 0.20),
-        "tool":       (ts, 0.15),
-        "rationale":  (rs, 0.10),
+        "confidence":        (cs,  0.20),
+        "var_weight":        (vws, 0.25),
+        "factor_f1":         (fs,  0.15),
+        "tool":              (ts,  0.15),
+        "section_grounding": (sgs, 0.15),
+        "rationale":         (rs,  0.10),
     }
 
     if rs is None:
         components = {
-            "confidence": (cs, 0.275),
-            "var_weight": (vws, 0.350),
-            "factor_f1":  (fs, 0.225),
-            "tool":       (ts, 0.150),
+            "confidence":        (cs,  0.225),
+            "var_weight":        (vws, 0.275),
+            "factor_f1":         (fs,  0.175),
+            "tool":              (ts,  0.150),
+            "section_grounding": (sgs, 0.175),
         }
 
     # Replace any component that is None with 0 so the math is well-defined,
@@ -630,6 +733,9 @@ def evaluate_case(
     base["case_score"] = max(0.0, min(1.0, score))
 
     parts = [f"tool: {t_reason}"]
+    sg_ungrounded = sg_details.get("ungrounded_variables", [])
+    if sg_ungrounded:
+        parts.append(f"ungrounded_vars={sg_ungrounded}")
     if rationale_judge is not None:
         parts.append(f"rationale: {r_reason}")
     if missing:
@@ -676,6 +782,7 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
     mean_among_pass = mean(r["case_score"] for r in gate_pass) if gate_pass else 0.0
 
     tool_scores = [r["tool_score"] for r in rows if r["tool_score"] is not None]
+    section_grounding_scores = [r["section_grounding_score"] for r in rows if r["section_grounding_score"] is not None]
     rationale_scores = [r["rationale_score"] for r in rows if r["rationale_score"] is not None]
 
     out = {
@@ -689,6 +796,7 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
         "confidence_weighted_kappa": None,
         "variable_weight_weighted_kappa": None,
         "mean_tool_score": mean(tool_scores) if tool_scores else None,
+        "mean_section_grounding_score": mean(section_grounding_scores) if section_grounding_scores else None,
         "mean_rationale_score": mean(rationale_scores) if rationale_scores else None,
         "decision_gate_pass_rate": gate_pass_rate,
         "mean_case_score_among_gate_passed": mean_among_pass,
@@ -753,6 +861,7 @@ CSV_COLUMNS = [
     "variable_weight_score",
     "important_decisive_factor_score",
     "tool_score",
+    "section_grounding_score",
     "rationale_score",
     "reason",
 ]
@@ -863,6 +972,7 @@ def run() -> None:
     print(f"Confidence weighted kappa: {fmt(aggregate.get('confidence_weighted_kappa'))}")
     print(f"Variable-weight weighted kappa: {fmt(aggregate.get('variable_weight_weighted_kappa'))}")
     print(f"Mean tool score: {fmt(aggregate.get('mean_tool_score'))}")
+    print(f"Mean section grounding score: {fmt(aggregate.get('mean_section_grounding_score'))}")
     print(f"Mean rationale score: {fmt(aggregate.get('mean_rationale_score'))}")
     print(f"Mean case score (among gate passed cases): {fmt(aggregate.get('mean_case_score_among_gate_passed'))}")
     print()

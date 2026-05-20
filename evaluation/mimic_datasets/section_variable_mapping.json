@@ -1,0 +1,164 @@
+{
+  "_meta": {
+    "description": "Maps revealed form sections to the variable_weights keys they inform. Used to evaluate whether information obtained from a revealed section was actually used in the agent's decision (via non-zero variable weight). Designed for urological biopsy decision-making following EAU/ESUR mpMRI-guided protocols.",
+    "schema_version": "1.4",
+    "variable_weights_keys": [
+      "pirads", "psad", "psa", "dre", "cspca", "age", "fh", "vol", "bx", "comorbidity"
+    ],
+    "weight_levels": {
+      "not_used": 0,
+      "noted": 1,
+      "important": 2,
+      "decisive": 3
+    },
+    "notes": [
+      "primary_variables: the variable_weights keys whose source data lives exclusively or primarily in this section.",
+      "secondary_variables: keys that can be corroborated or enriched by this section but are primarily sourced elsewhere.",
+      "always_available_variables: 'psa' (baseline) and 'age' are visible in the patient card before any section is revealed; a section reveal is not required to weight them, though richer context (density, trend) requires sections.",
+      "section_s3-psa is present in the HTML form but absent from the README section table; it is included here as it appears in real reveal sequences."
+    ]
+  },
+
+  "always_available_variables": {
+    "description": "Variables derivable from the patient card (patient.psa_ng_ml, patient.age_years) that are visible before any section is revealed. Agents may weight these without revealing any section.",
+    "variables": ["psa", "age"]
+  },
+
+  "section_to_variables": {
+
+    "section_s3-mri": {
+      "label": "Radiology / MRI report",
+      "display_hint": "mpMRI",
+      "primary_variables": ["pirads", "vol"],
+      "secondary_variables": [],
+      "clinical_rationale": {
+        "pirads": "The mpMRI report is the sole source of the PI-RADS score (1-5), lesion location, size, and zonal classification. PI-RADS is the cardinal variable for risk stratification; it cannot be assigned without this section.",
+        "vol": "Prostate volume is routinely measured from mpMRI (planimetry or ellipsoid formula on T2 sequences). This is the reference volume used to calculate PSA density; the agent cannot compute PSAD without it."
+      }
+    },
+
+    "section_s3-labs": {
+      "label": "Laboratory results",
+      "display_hint": "11 tests",
+      "primary_variables": ["psad", "dre", "cspca"],
+      "secondary_variables": ["psa", "vol"],
+      "clinical_rationale": {
+        "psad": "PSA density (PSA / prostate volume) is displayed as a calculated field in the laboratory panel. While the component values come from PSA (labs or patient card) and volume (MRI), the computed PSAD value is presented here.",
+        "dre": "Digital rectal examination findings (Normal / Benign / Nodus / Suspicious / Abnormal) are documented alongside laboratory values in this form's clinical workup panel. DRE is the primary clinical palpation finding and lives here.",
+        "cspca": "The clinically-significant prostate cancer probability (e.g., Stockholm3 or ERSPC risk calculator output) is shown as a computed risk score in the laboratory results alongside PSA and other biomarkers.",
+        "psa": "The current PSA measurement (ng/mL) is typically listed in the laboratory panel. Note: the raw PSA value is also visible in the patient card; this section adds precision, flags, and reference ranges.",
+        "vol": "Some centres report TRUS-derived prostate volume in the laboratory/radiology workup section. Where TRUS volume is listed here it may supplement or replace the MRI-derived volume."
+      }
+    },
+
+    "section_s3-psa": {
+      "label": "PSA trend",
+      "display_hint": "4 readings",
+      "primary_variables": ["psa"],
+      "secondary_variables": ["psad"],
+      "clinical_rationale": {
+        "psa": "This section provides the longitudinal PSA trajectory — serial measurements, PSA velocity (ng/mL/year), and PSA doubling time. Kinetic data materially changes how heavily PSA is weighted relative to a single static value.",
+        "psad": "Where volume has been stable across follow-up visits, PSAD velocity can be inferred from the PSA trend. This section may show how PSA density has evolved, reinforcing or weakening its weight."
+      }
+    },
+
+    "section_s3-path": {
+      "label": "Pathology report",
+      "display_hint": null,
+      "primary_variables": ["bx"],
+      "secondary_variables": [],
+      "clinical_rationale": {
+        "bx": "The pathology report is the definitive source for prior biopsy outcome: ISUP grade group, Gleason pattern, number of positive cores, percentage core involvement, and laterality. Without this section the agent has no basis for weighting prior biopsy status."
+      }
+    },
+
+    "section_s3-fh": {
+      "label": "Family history (anamnesis)",
+      "display_hint": "first-degree PCa",
+      "primary_variables": ["fh"],
+      "secondary_variables": [],
+      "clinical_rationale": {
+        "fh": "Family history of prostate cancer in first-degree relatives (father, brother) is documented exclusively in this section. Per EAU guidelines a positive family history shifts the PSAD threshold and influences the biopsy decision at PI-RADS 2-3."
+      }
+    },
+
+    "section_s3-prev": {
+      "label": "Previous notes",
+      "display_hint": "2 entries",
+      "primary_variables": ["bx"],
+      "secondary_variables": ["psa", "dre", "fh"],
+      "clinical_rationale": {
+        "bx": "Previous clinical encounter notes frequently contain the most detailed narrative of prior biopsy decisions, outcomes, and follow-up plans — including cases where the formal pathology report is sparse. For re-biopsy scenarios this section is critical.",
+        "psa": "Earlier PSA values recorded in prior visit notes can supplement or extend the PSA trend timeline beyond what the dedicated PSA trend section shows.",
+        "dre": "Prior DRE findings documented in previous notes provide longitudinal context (e.g., progressive induration) that increases the clinical weight of a currently suspicious DRE.",
+        "fh": "Family history information may be mentioned in previous notes when the patient disclosed it at an earlier visit, even if the dedicated family history section was not formally updated."
+      }
+    },
+
+    "section_s3-comorb": {
+      "label": "Comorbidities",
+      "display_hint": null,
+      "primary_variables": ["comorbidity"],
+      "secondary_variables": ["age"],
+      "clinical_rationale": {
+        "comorbidity": "This section documents active medical conditions (cardiovascular disease, diabetes, frailty index, ASA class), current medications, and life-expectancy estimates. Comorbidity is the override variable: severe comorbidity with life expectancy < 10 years shifts the decision to watchful waiting regardless of imaging findings.",
+        "age": "While age is visible in the patient card, this section provides functional age context — frailty, ECOG status, and multi-morbidity — that determines whether chronological age translates into a meaningful contraindication to biopsy."
+      }
+    }
+  },
+
+  "variable_to_sections": {
+    "pirads": {
+      "primary_sections": ["section_s3-mri"],
+      "secondary_sections": [],
+      "note": "PI-RADS score is available only from the MRI report. If the agent weights pirads above 'not_used', it should have revealed section_s3-mri."
+    },
+    "psad": {
+      "primary_sections": ["section_s3-labs"],
+      "secondary_sections": ["section_s3-mri", "section_s3-psa"],
+      "note": "PSAD is computed from PSA (labs) and prostate volume (MRI). The calculated PSAD value is displayed in the labs section. Both section_s3-labs and section_s3-mri provide the components; section_s3-labs shows the final computed value."
+    },
+    "psa": {
+      "primary_sections": ["section_s3-labs", "section_s3-psa"],
+      "secondary_sections": ["section_s3-prev"],
+      "always_available_baseline": true,
+      "note": "Baseline PSA is visible in the patient card; no section reveal is strictly required. However, PSA velocity and trend data require section_s3-psa or section_s3-labs. Weight above 'noted' implies the agent used more than the bare patient-card value."
+    },
+    "dre": {
+      "primary_sections": ["section_s3-labs"],
+      "secondary_sections": ["section_s3-prev"],
+      "note": "DRE findings are displayed in the laboratory/clinical workup panel. Previous notes may contain historical DRE findings for longitudinal context."
+    },
+    "cspca": {
+      "primary_sections": ["section_s3-labs"],
+      "secondary_sections": [],
+      "note": "The csPCa probability (risk model output) is shown as a calculated value in the laboratory results panel."
+    },
+    "age": {
+      "primary_sections": [],
+      "secondary_sections": ["section_s3-comorb"],
+      "always_available_baseline": true,
+      "note": "Age is always visible in the patient card. No section reveal is required. section_s3-comorb adds functional age context (frailty, comorbidity burden)."
+    },
+    "fh": {
+      "primary_sections": ["section_s3-fh"],
+      "secondary_sections": ["section_s3-prev"],
+      "note": "Family history of PCa in first-degree relatives is documented in section_s3-fh. It may also appear in previous clinical notes."
+    },
+    "vol": {
+      "primary_sections": ["section_s3-mri"],
+      "secondary_sections": ["section_s3-labs"],
+      "note": "Prostate volume is measured on mpMRI (T2 planimetry or ellipsoid). TRUS volume may appear in the labs panel. Volume is needed to compute PSAD."
+    },
+    "bx": {
+      "primary_sections": ["section_s3-path"],
+      "secondary_sections": ["section_s3-prev"],
+      "note": "Prior biopsy results (Gleason/ISUP grade, core count) live in the pathology report. Previous notes may contain narrative summaries of prior biopsy decisions."
+    },
+    "comorbidity": {
+      "primary_sections": ["section_s3-comorb"],
+      "secondary_sections": ["section_s3-prev"],
+      "note": "Comorbidity status and life-expectancy context are in the comorbidities section. Prior notes may mention comorbidities discussed at earlier visits."
+    }
+  }
+}
