@@ -2,7 +2,6 @@
 
 Evaluates LLM-agent biopsy-decision form responses against pathologist
 ground-truth using a hybrid deterministic + LLM scoring pipeline.
-![Evaluation Pipeline Overview](docs/evaluation_pipeline.png)
 
 ---
 
@@ -24,8 +23,7 @@ ground-truth using a hybrid deterministic + LLM scoring pipeline.
 │   ├── evaluation_object.json       # LLM-agent responses to evaluate (15 cases)
 │   └── README.md                    # dataset schema documentation
 │
-└── gt_formats/
-    └── Henrik.html                  # interactive form used to collect pathologist responses
+
 ```
 
 Generated at runtime (gitignored, never committed):
@@ -134,16 +132,25 @@ All component scores are in [0, 1]:
 
 | Component | Method | Weight (with rationale) | Weight (without) |
 |-----------|--------|------------------------|-----------------|
-| **Confidence** | Ordinal distance: `1 − \|gt − pred\| / 2` | 0.25 | 0.275 |
-| **Variable weights** | Mean ordinal MAE across all variables | 0.30 | 0.350 |
-| **Important/decisive factors** | Set-F1 between `important`+`decisive` variable sets | 0.20 | 0.225 |
+| **Confidence** | Ordinal distance: `1 − \|gt − pred\| / 2` | 0.20 | 0.225 |
+| **Variable weights** | Mean ordinal MAE across all variables | 0.25 | 0.275 |
+| **Important/decisive factors** | Set-F1 between `important`+`decisive` variable sets | 0.15 | 0.175 |
 | **Tool efficiency precision** | `\|agent revealed ∩ pathologist revealed\| / \|agent revealed\|` | 0.15 | 0.150 |
+| **Section grounding score** | `n_grounded_variables / n_weighted_variables` — fraction of actively-weighted variables whose primary source section the agent actually revealed | 0.15 | 0.175 |
 | **Rationale alignment** | GEval rubric judged by Ollama (`USE_RATIONALE_JUDGE=0` to disable) | 0.10 | — |
 
 **Tool score policy:** the agent is penalised only for revealing sections the
 pathologist did not reveal (unnecessary information lookup). Missing sections
 are not penalised — the evaluator does not require the agent to mimic the
 pathologist's exact workup, only to avoid waste.
+
+**Section grounding score policy:** penalises the agent for weighting a
+clinical variable (above `not_used`) without having revealed the section that
+provides that variable's data. For each such variable the mapping file
+(`mimic_datasets/section_variable_mapping.json`) defines which sections are its
+primary source. Variables that are always visible in the patient card (`psa`,
+`age`) are exempt. Score = `n_grounded / n_weighted`; a score of 1.0 means
+every variable the agent rated was backed by a section it actually opened.
 
 ### Aggregate metrics (dataset level)
 
@@ -156,6 +163,7 @@ pathologist's exact workup, only to avoid waste.
 | `confidence_weighted_kappa` | Quadratic Cohen's κ on confidence labels |
 | `variable_weight_weighted_kappa` | Quadratic Cohen's κ across all variable weights |
 | `mean_tool_score` | Mean tool efficiency precision |
+| `mean_section_grounding_score` | Mean section grounding score across all gate-passed cases |
 | `decision_gate_pass_rate` | Fraction of cases that passed the hard gate |
 | `mean_case_score_among_gate_passed` | Mean component score excluding gate failures |
 
