@@ -1,7 +1,7 @@
 # Mimic datasets
 
 Two JSON files that mirror the record exported by the pathologist-facing form
-in `gt_formats/Henrik.html` (schema version 1.4):
+(schema version 1.4):
 
 | File | Role |
 |------|------|

@@ -29,10 +29,12 @@
     "section_s3-mri": {
       "label": "Radiology / MRI report",
       "display_hint": "mpMRI",
-      "primary_variables": ["pirads", "vol"],
+      "primary_variables": ["pirads", "psad", "cspca", "vol"],
       "secondary_variables": [],
       "clinical_rationale": {
         "pirads": "The mpMRI report is the sole source of the PI-RADS score (1-5), lesion location, size, and zonal classification. PI-RADS is the cardinal variable for risk stratification; it cannot be assigned without this section.",
+        "psad": "Prostate volume measured from mpMRI (T2 planimetry or ellipsoid formula) is the denominator for PSA density (PSA / volume). The MRI report is the primary source of the volume component; the agent cannot compute or validate PSAD without this section.",
+        "cspca": "PI-RADS score and lesion characteristics from mpMRI are the principal imaging inputs to clinically significant prostate cancer risk calculators (e.g., ERSPC-MRI, Stockholm3 with MRI). The MRI report is the primary imaging determinant of csPCa probability.",
         "vol": "Prostate volume is routinely measured from mpMRI (planimetry or ellipsoid formula on T2 sequences). This is the reference volume used to calculate PSA density; the agent cannot compute PSAD without it."
       }
     },
@@ -40,14 +42,14 @@
     "section_s3-labs": {
       "label": "Laboratory results",
       "display_hint": "11 tests",
-      "primary_variables": ["psad", "dre", "cspca"],
-      "secondary_variables": ["psa", "vol"],
+      "primary_variables": ["dre"],
+      "secondary_variables": ["psa", "vol", "psad", "cspca"],
       "clinical_rationale": {
-        "psad": "PSA density (PSA / prostate volume) is displayed as a calculated field in the laboratory panel. While the component values come from PSA (labs or patient card) and volume (MRI), the computed PSAD value is presented here.",
         "dre": "Digital rectal examination findings (Normal / Benign / Nodus / Suspicious / Abnormal) are documented alongside laboratory values in this form's clinical workup panel. DRE is the primary clinical palpation finding and lives here.",
-        "cspca": "The clinically-significant prostate cancer probability (e.g., Stockholm3 or ERSPC risk calculator output) is shown as a computed risk score in the laboratory results alongside PSA and other biomarkers.",
         "psa": "The current PSA measurement (ng/mL) is typically listed in the laboratory panel. Note: the raw PSA value is also visible in the patient card; this section adds precision, flags, and reference ranges.",
-        "vol": "Some centres report TRUS-derived prostate volume in the laboratory/radiology workup section. Where TRUS volume is listed here it may supplement or replace the MRI-derived volume."
+        "vol": "Some centres report TRUS-derived prostate volume in the laboratory/radiology workup section. Where TRUS volume is listed here it may supplement or replace the MRI-derived volume.",
+        "psad": "The computed PSA density value may be displayed in the laboratory panel as a derived field. Volume and PSA components are primary-sourced from MRI and the PSA trend section respectively; this panel corroborates the calculated result.",
+        "cspca": "A csPCa risk score may appear in the laboratory results panel alongside PSA and other biomarkers. The primary imaging inputs driving this score come from the MRI report; labs provide supporting biomarker context."
       }
     },
 
@@ -114,15 +116,15 @@
       "note": "PI-RADS score is available only from the MRI report. If the agent weights pirads above 'not_used', it should have revealed section_s3-mri."
     },
     "psad": {
-      "primary_sections": ["section_s3-labs"],
-      "secondary_sections": ["section_s3-mri", "section_s3-psa"],
-      "note": "PSAD is computed from PSA (labs) and prostate volume (MRI). The calculated PSAD value is displayed in the labs section. Both section_s3-labs and section_s3-mri provide the components; section_s3-labs shows the final computed value."
+      "primary_sections": ["section_s3-mri"],
+      "secondary_sections": ["section_s3-labs", "section_s3-psa"],
+      "note": "PSAD is computed from prostate volume (MRI) and PSA (PSA trend or patient card). The MRI report is the primary source for the volume denominator that makes PSAD calculable. The labs panel may corroborate the derived value."
     },
     "psa": {
-      "primary_sections": ["section_s3-labs", "section_s3-psa"],
-      "secondary_sections": ["section_s3-prev"],
+      "primary_sections": ["section_s3-psa"],
+      "secondary_sections": ["section_s3-labs", "section_s3-prev"],
       "always_available_baseline": true,
-      "note": "Baseline PSA is visible in the patient card; no section reveal is strictly required. However, PSA velocity and trend data require section_s3-psa or section_s3-labs. Weight above 'noted' implies the agent used more than the bare patient-card value."
+      "note": "Baseline PSA is visible in the patient card; no section reveal is strictly required. The PSA trend section is the primary source for longitudinal trajectory — velocity, doubling time, and serial readings. The labs panel corroborates the current point value."
     },
     "dre": {
       "primary_sections": ["section_s3-labs"],
@@ -130,9 +132,9 @@
       "note": "DRE findings are displayed in the laboratory/clinical workup panel. Previous notes may contain historical DRE findings for longitudinal context."
     },
     "cspca": {
-      "primary_sections": ["section_s3-labs"],
-      "secondary_sections": [],
-      "note": "The csPCa probability (risk model output) is shown as a calculated value in the laboratory results panel."
+      "primary_sections": ["section_s3-mri"],
+      "secondary_sections": ["section_s3-labs"],
+      "note": "Clinically significant prostate cancer probability is primarily driven by PI-RADS score and imaging characteristics from the MRI report. The labs panel may show a computed risk score, but the imaging findings in section_s3-mri are the principal determinant."
     },
     "age": {
       "primary_sections": [],
