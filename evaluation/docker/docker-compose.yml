@@ -48,7 +48,7 @@ services:
       # physical GPU to expose.  Docker remaps it to device 0 inside the
       # container. Do NOT also set CUDA_VISIBLE_DEVICES — Ollama warns that
       # manually overriding it can prevent GPU discovery.
-      - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_ID:-3}
+      - NVIDIA_VISIBLE_DEVICES=${GPU_DEVICE_ID:-0}
 
     # GPU access — requires NVIDIA Container Toolkit on the host.
     # Comment this block out for a CPU-only run (also set USE_RATIONALE_JUDGE=0).
@@ -57,5 +57,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${GPU_DEVICE_ID:-3}"]
+              device_ids: ["${GPU_DEVICE_ID:-0}"]
               capabilities: [gpu]
