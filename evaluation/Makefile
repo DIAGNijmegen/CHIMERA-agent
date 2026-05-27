@@ -52,7 +52,7 @@ export OLLAMA_MODELS_DIR := $(abspath $(OLLAMA_MODELS_DIR))
 JUDGE_MODEL       ?= gemma4:e4b
 export JUDGE_MODEL
 
-COMPOSE := docker compose -f docker/docker-compose.yml
+COMPOSE := docker-compose -f docker/docker-compose.yml
 IMAGE   := biopsy-evaluator:latest
 
 # ── Targets ──────────────────────────────────────────────────────────────────
