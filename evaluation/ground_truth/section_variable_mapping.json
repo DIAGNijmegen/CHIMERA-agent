@@ -157,6 +157,26 @@
       "secondary_sections": ["section_s3-prev"],
       "note": "Prior biopsy results (Gleason/ISUP grade, core count) live in the pathology report. Previous notes may contain narrative summaries of prior biopsy decisions."
     },
+    "bx_isup": {
+      "primary_sections": ["section_s3-path"],
+      "secondary_sections": ["section_s3-prev"],
+      "note": "Current ISUP grade group is read from the pathology report and drives treatment selection."
+    },
+    "bx_gl_prim": {
+      "primary_sections": ["section_s3-path"],
+      "secondary_sections": ["section_s3-prev"],
+      "note": "The primary Gleason pattern is sourced from the pathology report."
+    },
+    "bx_gl_sec": {
+      "primary_sections": ["section_s3-path"],
+      "secondary_sections": ["section_s3-prev"],
+      "note": "The secondary Gleason pattern is sourced from the pathology report."
+    },
+    "ct": {
+      "primary_sections": ["section_s3-mri"],
+      "secondary_sections": ["section_s3-labs"],
+      "note": "Clinical T stage is primarily documented in the MRI report and may be corroborated by examination findings."
+    },
     "comorbidity": {
       "primary_sections": ["section_s3-comorb"],
       "secondary_sections": ["section_s3-prev"],

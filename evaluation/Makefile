@@ -21,7 +21,8 @@
 #
 # Targets:
 #   make build       — build the unified evaluator image
-#   make run         — build + run the evaluation (default)
+#   make run         — build + run one evaluation task (default TASK_ID=task1)
+#   make run-all     — build once, then run task1 and task2 sequentially
 #   make shell       — open a bash shell inside the container
 #   make pull-model  — pre-populate ./models/ with the judge weights
 #                      (handy before a Grand-Challenge submission so the
@@ -31,7 +32,7 @@
 #   make help        — show this list
 # ============================================================================
 
-.PHONY: build run shell pull-model down clean help
+.PHONY: build run run-all shell pull-model down clean help
 
 # ── Identity ─────────────────────────────────────────────────────────────────
 export HOST_UID := $(shell id -u)
@@ -42,12 +43,16 @@ export HOST_GID := $(shell id -g)
 
 # ── Resolve mount paths to absolute (compose handles relative too, but
 #    keeping them absolute avoids surprises across shells / CI) ─────────────
-INPUT_DIR         ?= $(CURDIR)/mimic_datasets
-OUTPUT_DIR        ?= $(CURDIR)/results
-OLLAMA_MODELS_DIR ?= $(CURDIR)/models
-export INPUT_DIR         := $(abspath $(INPUT_DIR))
-export OUTPUT_DIR        := $(abspath $(OUTPUT_DIR))
-export OLLAMA_MODELS_DIR := $(abspath $(OLLAMA_MODELS_DIR))
+TASK_ID            ?= task1
+GROUND_TRUTH_DIR   ?= $(CURDIR)/ground_truth
+TEST_OUTPUTS_DIR   ?= $(CURDIR)/test/outputs
+OUTPUT_DIR         ?= $(CURDIR)/results
+OLLAMA_MODELS_DIR  ?= $(CURDIR)/models
+export TASK_ID
+export GROUND_TRUTH_DIR   := $(abspath $(GROUND_TRUTH_DIR))
+export TEST_OUTPUTS_DIR   := $(abspath $(TEST_OUTPUTS_DIR))
+export OUTPUT_DIR         := $(abspath $(OUTPUT_DIR))
+export OLLAMA_MODELS_DIR  := $(abspath $(OLLAMA_MODELS_DIR))
 
 JUDGE_MODEL       ?= gemma4:e4b
 export JUDGE_MODEL
@@ -65,9 +70,14 @@ build:  ## Build the unified evaluator Docker image
 	@mkdir -p "$(OUTPUT_DIR)" "$(OLLAMA_MODELS_DIR)"
 	$(COMPOSE) build evaluator
 
-run: build  ## Build + run the full evaluation  [default]
+run: build  ## Build + run one evaluation task  [default TASK_ID=task1]
 	@mkdir -p "$(OUTPUT_DIR)" "$(OLLAMA_MODELS_DIR)"
 	$(COMPOSE) run --rm evaluator
+
+run-all: build  ## Build once, then run task1 and task2 into separate result dirs
+	@mkdir -p "$(OUTPUT_DIR)/task1" "$(OUTPUT_DIR)/task2" "$(OLLAMA_MODELS_DIR)"
+	TASK_ID=task1 OUTPUT_DIR="$(OUTPUT_DIR)/task1" $(COMPOSE) run --rm evaluator
+	TASK_ID=task2 OUTPUT_DIR="$(OUTPUT_DIR)/task2" $(COMPOSE) run --rm evaluator
 
 shell: build  ## Open a bash shell in the container (Ollama is NOT auto-started)
 	$(COMPOSE) run --rm --entrypoint bash evaluator

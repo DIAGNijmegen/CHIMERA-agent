@@ -1,0 +1,39 @@
+{
+  "source": "Pathologist (ground truth) form responses. Mirrors the JSON record exported by gt_formats/Henrik.html (schema 1.4). Each record is one urologist biopsy_decision_cot submission.",
+  "schema_version": "1.4",
+  "biopsy_decision": [
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_01",
+      "urologist": {"name": "Pathologist A", "years_expertise": 18},
+      "patient": {"id": "BX_01", "psa_ng_ml": 8.5, "age_years": 58},
+      "clinical_data": {
+        "pirads": "4", "psa_density": 0.25, "psa_velocity": null, "prior_psa": null, "prostate_vol": 34,
+        "months_last_psa": 1, "dre": "Suspicious", "prior_biopsy": "None", "family_hx": "No",
+        "cspca_prob": 0.72, "med_history": "Hypertension", "medication": "Amlodipine",
+        "notes": "PSA 8.5. PI-RADS 4. PSAD 0.25. Volume 34 mL. DRE suspicious."
+      },
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "decisive_variables": [{"variable": "PI-RADS", "flip_below": "3", "unit": "score"}],
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "important",
+        "cspca": "important", "age": "noted", "fh": "not_used", "vol": "noted", "bx": "noted",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "click", "ts": "2026-05-06T16:05:31.000Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "click", "ts": "2026-05-06T16:05:32.000Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "click", "ts": "2026-05-06T16:05:33.000Z"}
+      ],
+      "not_revealed_variables": [],
+      "repeat_test": null,
+      "free_text": "PI-RADS 4 alone mandates targeted + perilesional biopsy regardless of PSA density or family history. PSA density 0.25 and suspicious DRE further support.",
+      "summary_viewed": true,
+      "session_start": "2026-05-06T16:05:25.000Z",
+      "session_end":   "2026-05-06T16:06:22.000Z"
+    }
+  ]
+}

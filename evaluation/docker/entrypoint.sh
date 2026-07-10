@@ -12,15 +12,16 @@
 # 4. Run the evaluator.
 # 5. Shut Ollama down cleanly and propagate the evaluator exit code.
 #
-# All file paths follow the Grand-Challenge convention:
-#   /input/   read-only inputs
-#   /output/  writable results
-#   /models/  Ollama weight store (judge model)
+# Runtime paths:
+#   /ground_truth/  read-only pathologist responses + section mapping
+#   /test/outputs/  read-only predictions
+#   /output/        writable results
+#   /models/        Ollama weight store (judge model)
 # ============================================================================
 set -euo pipefail
 
 # --------------------------------------------------------------------------- #
-# Resolve mapping file: prefer /input/, fall back to the in-image default.
+# Resolve mapping file: prefer /ground_truth/, fall back to the in-image default.
 # --------------------------------------------------------------------------- #
 if [[ -n "${SECTION_MAPPING_FILE:-}" && ! -f "${SECTION_MAPPING_FILE}" ]]; then
     if [[ -f /opt/app/defaults/section_variable_mapping.json ]]; then

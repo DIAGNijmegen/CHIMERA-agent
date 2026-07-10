@@ -1,0 +1,95 @@
+{
+  "source": "Pathologist (ground truth) treatment-decision form responses. Mirrors JSON export from gt_formats/task2_pathologist_form.html (schema 1.0). Each record is one urologist_treatment_decision_cot submission.",
+  "schema_version": "1.0",
+  "treatment_decision": [
+    {
+      "schema_version": "1.0",
+      "task": "urologist_treatment_decision_cot",
+      "case_type": "dataset",
+      "case_id": "T2_01",
+      "urologist": {
+        "name": "Pathologist A",
+        "years_expertise": 18
+      },
+      "patient": {
+        "id": "T2-001",
+        "psa_ng_ml": 4.7,
+        "age_years": 67
+      },
+      "biopsy_results": {
+        "isup_grade": 1,
+        "isup_pred": 2,
+        "gleason_primary": 3,
+        "gleason_secondary": 3,
+        "gleason_tertiary": null,
+        "clinical_stage": "cT1c",
+        "dre": "Abnormal",
+        "active_treatment": 0,
+        "cores_positive": null,
+        "cores_total": null,
+        "max_core_pct": null,
+        "growth_pattern": "Acinar",
+        "high_risk_patterns": "No cribriform or intraductal patterns identified",
+        "pni": null,
+        "lvi": null,
+        "tumor_location": "peripheral zone, ventral left"
+      },
+      "clinical_data": {
+        "pirads": "2",
+        "psa_density": 0.14,
+        "psa_velocity": 1.17,
+        "prostate_vol": 33.46,
+        "dre": "Abnormal",
+        "family_hx": "Yes",
+        "cspca_prob": 0.59620297,
+        "life_expectancy": null,
+        "ecog": null,
+        "patient_preference": null,
+        "med_history": "Upper abdominal surgery",
+        "medication": "None",
+        "notes": "PSA 4.7 ng/mL. PI-RADS 2. PSAD 0.14. Prostate volume 33 mL. DRE abnormal. csPCa 0.60."
+      },
+      "treatment_recommendation": {
+        "primary": "active_surveillance",
+        "modalities": [],
+        "detail": null,
+        "as_protocol": "strict",
+        "as_trigger": "Upgrade to ISUP >=2, rising PSA kinetics, or MRI progression."
+      },
+      "confidence": "clear",
+      "decisive_variables": [
+        {
+          "variable": "bx_isup",
+          "flip_at": "2",
+          "unit": "grade_group"
+        }
+      ],
+      "variable_weights": {
+        "age": "noted",
+        "bx_isup": "decisive",
+        "pirads": "important",
+        "ct": "noted",
+        "psad": "important",
+        "bx_gl_sec": "important",
+        "comorbidity": "noted",
+        "fh": "important",
+        "cspca": "important",
+        "psa": "noted",
+        "bx_gl_prim": "important"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-path", "label": "Pathology report",        "value": "section", "via": "click", "ts": "2026-07-09T21:08:47.000Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "click", "ts": "2026-07-09T21:08:49.000Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "click", "ts": "2026-07-09T21:08:51.000Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-psa",  "label": "PSA trend",              "value": "section", "via": "click", "ts": "2026-07-09T21:08:53.000Z"},
+        {"page": "decision", "order": 5, "key": "section_s3-fh",   "label": "Family history (anamnesis)", "value": "section", "via": "click", "ts": "2026-07-09T21:08:55.000Z"},
+        {"page": "decision", "order": 6, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "click", "ts": "2026-07-09T21:08:57.000Z"}
+      ],
+      "repeat_test": "Repeat PSA and MRI in 6-12 months.",
+      "free_text": "Low-grade disease (ISUP 1) with stable low-volume features and PI-RADS 2 supports active surveillance despite positive family history.",
+      "summary_viewed": true,
+      "session_start": "2026-07-09T21:08:42.415Z",
+      "session_end": "2026-07-09T21:10:27.865Z"
+    }
+  ]
+}

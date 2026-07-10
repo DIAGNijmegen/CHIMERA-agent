@@ -1,0 +1,40 @@
+{
+  "source": "Pathologist (ground truth) form responses. Mirrors the JSON record exported by gt_formats/Henrik.html (schema 1.4). Each record is one urologist biopsy_decision_cot submission.",
+  "schema_version": "1.4",
+  "biopsy_decision": [
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_02",
+      "urologist": {"name": "Pathologist A", "years_expertise": 18},
+      "patient": {"id": "BX_02", "psa_ng_ml": 6.2, "age_years": 52},
+      "clinical_data": {
+        "pirads": "5", "psa_density": 0.22, "psa_velocity": 0.8, "prior_psa": 5.4, "prostate_vol": 28,
+        "months_last_psa": 12, "dre": "Suspicious", "prior_biopsy": "None", "family_hx": "Yes",
+        "cspca_prob": 0.85, "med_history": "None", "medication": "None",
+        "notes": "Father + brother with PCa."
+      },
+      "biopsy_decision": "yes",
+      "confidence": "clear",
+      "decisive_variables": [{"variable": "PI-RADS", "flip_below": "3", "unit": "score"}],
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "important",
+        "cspca": "important", "age": "noted", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "click", "ts": "2026-05-06T16:10:01.000Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "click", "ts": "2026-05-06T16:10:03.000Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "click", "ts": "2026-05-06T16:10:05.000Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-fh",   "label": "Family history",         "value": "section", "via": "click", "ts": "2026-05-06T16:10:07.000Z"}
+      ],
+      "not_revealed_variables": [],
+      "repeat_test": null,
+      "free_text": "PI-RADS 5 with high PSA density and first-degree family history. Unambiguous biopsy indication.",
+      "summary_viewed": true,
+      "session_start": "2026-05-06T16:09:55.000Z",
+      "session_end":   "2026-05-06T16:11:00.000Z"
+    }
+  ]
+}

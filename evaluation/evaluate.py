@@ -1,10 +1,13 @@
-"""Deterministic + optional LLM evaluation pipeline for biopsy-decision forms.
+"""Deterministic + optional LLM evaluation pipeline for clinical decision forms.
 
-Compares LLM-agent form responses (mimic_datasets/evaluation_object.json)
-against pathologist ground-truth (mimic_datasets/target.json) using:
+Compares LLM-agent form responses from
+test/outputs/<task_id>/<case_id>/prediction.json against pathologist
+ground-truth from ground_truth/<task_id>/<case_id>/pathologist_response.json
+using:
 
-    * A hard biopsy-decision gate (per case) — cases that get the
-      yes/no decision wrong score 0 regardless of other components.
+        * A decision check (per case). Task 1 biopsy decisions are a hard yes/no
+            gate. Task 2 treatment decisions allow partial credit only for active
+            vs continued surveillance confusion.
 
     * Deterministic ordinal scores:
         - confidence_score          ordinal distance on clear/borderline/uncertain
@@ -36,8 +39,9 @@ Or directly (Ollama must be reachable at OLLAMA_BASE_URL):
 
 Environment variable overrides:
 
-    TARGET_FILE        path to ground-truth JSON  (default: mimic_datasets/target.json)
-    EVAL_FILE          path to candidate JSON      (default: mimic_datasets/evaluation_object.json)
+    TASK_ID            task directory name         (default: task1)
+    GROUND_TRUTH_DIR   ground-truth case directory (default: ground_truth/$TASK_ID)
+    TEST_OUTPUTS_DIR   prediction case directory   (default: test/outputs/$TASK_ID)
     EVAL_OUTPUT_DIR    output directory            (default: results/)
     OLLAMA_BASE_URL    Ollama API base URL         (default: http://ollama:11434)
     JUDGE_MODEL        Ollama model name           (default: gemma4:e4b)
@@ -73,21 +77,25 @@ import requests
 
 ROOT = Path(__file__).resolve().parent
 
-TARGET_FILE = Path(os.getenv(
-    "TARGET_FILE",
-    str(ROOT / "mimic_datasets" / "target.json"),
+TASK_ID = os.getenv("TASK_ID", "task1")
+
+GROUND_TRUTH_DIR = Path(os.getenv(
+    "GROUND_TRUTH_DIR",
+    str(ROOT / "ground_truth" / TASK_ID),
 ))
-EVAL_FILE = Path(os.getenv(
-    "EVAL_FILE",
-    str(ROOT / "mimic_datasets" / "evaluation_object.json"),
+TEST_OUTPUTS_DIR = Path(os.getenv(
+    "TEST_OUTPUTS_DIR",
+    str(ROOT / "test" / "outputs" / TASK_ID),
 ))
+GROUND_TRUTH_FILENAME = os.getenv("GROUND_TRUTH_FILENAME", "pathologist_response.json")
+PREDICTION_FILENAME = os.getenv("PREDICTION_FILENAME", "prediction.json")
 OUTPUT_DIR = Path(os.getenv(
     "EVAL_OUTPUT_DIR",
     str(ROOT / "results"),
 ))
 SECTION_MAPPING_FILE = Path(os.getenv(
     "SECTION_MAPPING_FILE",
-    str(ROOT / "mimic_datasets" / "section_variable_mapping.json"),
+    str(GROUND_TRUTH_DIR.parent / "section_variable_mapping.json"),
 ))
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
@@ -100,6 +108,15 @@ USE_RATIONALE_JUDGE = bool(int(os.getenv("USE_RATIONALE_JUDGE", "1")))
 # --------------------------------------------------------------------------- #
 
 VALID_BIOPSY_DECISIONS = {"yes", "no"}
+VALID_TREATMENT_DECISIONS = {
+    "watchful_waiting",
+    "active_surveillance",
+    "continued_surveillance",
+    "active_treatment",
+}
+PARTIAL_TREATMENT_MISMATCHES = {
+    frozenset({"active_surveillance", "continued_surveillance"}),
+}
 
 CONF_MAP = {
     "uncertain":  0,
@@ -139,10 +156,34 @@ def normalize_task_records(data: Any, task_name: str = "biopsy_decision") -> lis
     if isinstance(data, dict):
         if task_name in data and isinstance(data[task_name], list):
             return [r for r in data[task_name] if isinstance(r, dict)]
+        for value in data.values():
+            if (
+                isinstance(value, list)
+                and all(isinstance(r, dict) for r in value)
+                and all("case_id" in r or "patient" in r for r in value)
+            ):
+                return value
         # Fallback: maybe the dict IS the single record.
         if "biopsy_decision" in data and isinstance(data["biopsy_decision"], str):
             return [data]
     return []
+
+
+def load_case_directory_records(root: Path, filename: str, role: str) -> list[dict]:
+    """Load one JSON response file per case from root/<case_id>/<filename>."""
+    if not root.exists():
+        sys.exit(f"Missing {role} directory: {root}")
+    if not root.is_dir():
+        sys.exit(f"{role} path is not a directory: {root}")
+
+    records: list[dict] = []
+    for path in sorted(root.glob(f"*/{filename}")):
+        case_records = normalize_task_records(load_json(path))
+        if not case_records:
+            print(f"[warning] no records found in {path}")
+            continue
+        records.extend(case_records)
+    return records
 
 
 def get_case_id(record: dict) -> str:
@@ -155,13 +196,23 @@ def get_case_id(record: dict) -> str:
     return ""
 
 
-def validate_record(record: dict) -> tuple[bool, str]:
+def task_kind(record: dict) -> str:
+    return "treatment" if "treatment_recommendation" in record else "biopsy"
+
+
+def validate_record(record: dict, task: str) -> tuple[bool, str]:
     """Lightweight schema check on a candidate record."""
     if not isinstance(record, dict):
         return False, "candidate is not an object"
-    decision = str(record.get("biopsy_decision", "")).lower().strip()
-    if decision not in VALID_BIOPSY_DECISIONS:
-        return False, f"invalid biopsy_decision={record.get('biopsy_decision')!r}"
+    if task == "treatment":
+        decision = _norm_treatment_decision(record)
+        if decision not in VALID_TREATMENT_DECISIONS:
+            raw = (record.get("treatment_recommendation") or {}).get("primary")
+            return False, f"invalid treatment_recommendation.primary={raw!r}"
+    else:
+        decision = _norm_decision(record.get("biopsy_decision"))
+        if decision not in VALID_BIOPSY_DECISIONS:
+            return False, f"invalid biopsy_decision={record.get('biopsy_decision')!r}"
     weights = record.get("variable_weights")
     if weights is not None and not isinstance(weights, dict):
         return False, "variable_weights must be an object"
@@ -188,6 +239,42 @@ def _norm_decision(value: Any) -> str | None:
         return None
     v = value.strip().lower()
     return v if v in VALID_BIOPSY_DECISIONS else None
+
+
+def _norm_treatment_decision(record: dict | None) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    rec = record.get("treatment_recommendation") or {}
+    if not isinstance(rec, dict):
+        return None
+    value = rec.get("primary")
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower().replace("-", "_")
+    v = "_".join(v.split())
+    return v if v in VALID_TREATMENT_DECISIONS else None
+
+
+def decision_score(task: str, gt: dict, pred: dict) -> tuple[float, str | None, str | None, str]:
+    if task == "treatment":
+        gt_decision = _norm_treatment_decision(gt)
+        pred_decision = _norm_treatment_decision(pred)
+        if gt_decision == pred_decision and gt_decision is not None:
+            return 1.0, gt_decision, pred_decision, "treatment_decision matched"
+        pair = frozenset({gt_decision, pred_decision})
+        if pair in PARTIAL_TREATMENT_MISMATCHES:
+            return 0.5, gt_decision, pred_decision, "active/continued surveillance partial credit"
+        return 0.0, gt_decision, pred_decision, (
+            f"treatment_decision mismatch: gt={gt_decision!r} pred={pred_decision!r}"
+        )
+
+    gt_decision = _norm_decision(gt.get("biopsy_decision"))
+    pred_decision = _norm_decision(pred.get("biopsy_decision"))
+    if gt_decision == pred_decision and gt_decision is not None:
+        return 1.0, gt_decision, pred_decision, "biopsy_decision matched"
+    return 0.0, gt_decision, pred_decision, (
+        f"biopsy_decision mismatch: gt={gt_decision!r} pred={pred_decision!r}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -564,9 +651,9 @@ def build_rationale_judge():
 
     rubric = (
         "Score the agent's free-text rationale (Actual Output) against the "
-        "pathologist's rationale (Expected Output) and the case's expected "
-        "biopsy decision. Score HIGH if the rationale: (1) supports the same "
-        "biopsy decision; (2) cites the same important/decisive clinical "
+        "pathologist's rationale (Expected Output) and the case's expected clinical "
+        "decision. Score HIGH if the rationale: (1) supports the same "
+        "decision; (2) cites the same important/decisive clinical "
         "variables; (3) does not contradict the clinical_data; (4) does not "
         "invent unavailable information; (5) expresses uncertainty consistent "
         "with the stated confidence. Score LOW if it contradicts the decision, "
@@ -597,22 +684,28 @@ def build_rationale_judge():
         if not gt_text or not pred_text:
             return None, "missing free_text on gt or pred"
 
+        task = task_kind(gt)
+        gt_decision = _norm_treatment_decision(gt) if task == "treatment" else _norm_decision(gt.get("biopsy_decision"))
+        pred_decision = _norm_treatment_decision(pred) if task == "treatment" else _norm_decision(pred.get("biopsy_decision"))
+
         input_ctx = {
             "case_id": get_case_id(gt),
+            "task": task,
             "patient": gt.get("patient", {}),
             "clinical_data": gt.get("clinical_data", {}),
-            "expected_biopsy_decision": gt.get("biopsy_decision"),
+            "biopsy_results": gt.get("biopsy_results", {}),
+            "expected_decision": gt_decision,
             "expected_confidence": gt.get("confidence"),
             "expected_repeat_test": gt.get("repeat_test"),
         }
         actual = {
-            "biopsy_decision": pred.get("biopsy_decision"),
+            "decision": pred_decision,
             "confidence": pred.get("confidence"),
             "repeat_test": pred.get("repeat_test"),
             "free_text": pred_text,
         }
         expected = {
-            "biopsy_decision": gt.get("biopsy_decision"),
+            "decision": gt_decision,
             "confidence": gt.get("confidence"),
             "repeat_test": gt.get("repeat_test"),
             "free_text": gt_text,
@@ -647,15 +740,24 @@ def evaluate_case(
     rationale_judge,
 ) -> dict:
     case_id = get_case_id(gt)
-    gt_decision = _norm_decision(gt.get("biopsy_decision"))
+    task = task_kind(gt)
+    gt_decision = _norm_treatment_decision(gt) if task == "treatment" else _norm_decision(gt.get("biopsy_decision"))
 
     base = {
         "case_id": case_id,
+        "task": task,
         "gate": "passed",
         "case_score": 0.0,
+        "decision_score": 0.0,
+        "decision_correct": False,
+        "gt_decision": gt_decision,
+        "pred_decision": None,
         "biopsy_decision_correct": False,
-        "gt_biopsy_decision": gt_decision,
+        "gt_biopsy_decision": gt_decision if task == "biopsy" else None,
         "pred_biopsy_decision": None,
+        "treatment_decision_correct": False,
+        "gt_treatment_decision": gt_decision if task == "treatment" else None,
+        "pred_treatment_decision": None,
         "confidence_score": None,
         "variable_weight_score": None,
         "important_decisive_factor_score": None,
@@ -670,23 +772,38 @@ def evaluate_case(
         base["reason"] = "no candidate record for this case"
         return base
 
-    ok, why = validate_record(pred)
+    ok, why = validate_record(pred, task)
     if not ok:
         base["gate"] = "schema_failed"
         base["reason"] = f"schema validation failed: {why}"
-        base["pred_biopsy_decision"] = pred.get("biopsy_decision")
+        if task == "biopsy":
+            base["pred_biopsy_decision"] = pred.get("biopsy_decision")
+        else:
+            rec = pred.get("treatment_recommendation") or {}
+            base["pred_treatment_decision"] = rec.get("primary") if isinstance(rec, dict) else None
+            base["pred_decision"] = base["pred_treatment_decision"]
         return base
 
-    pred_decision = _norm_decision(pred.get("biopsy_decision"))
-    base["pred_biopsy_decision"] = pred_decision
-    base["biopsy_decision_correct"] = (gt_decision == pred_decision and gt_decision is not None)
+    ds, gt_decision, pred_decision, d_reason = decision_score(task, gt, pred)
+    base["decision_score"] = ds
+    base["gt_decision"] = gt_decision
+    base["pred_decision"] = pred_decision
+    base["decision_correct"] = ds == 1.0
+    if task == "biopsy":
+        base["gt_biopsy_decision"] = gt_decision
+        base["pred_biopsy_decision"] = pred_decision
+        base["biopsy_decision_correct"] = ds == 1.0
+    else:
+        base["gt_treatment_decision"] = gt_decision
+        base["pred_treatment_decision"] = pred_decision
+        base["treatment_decision_correct"] = ds == 1.0
 
-    if not base["biopsy_decision_correct"]:
-        base["gate"] = "biopsy_decision_failed"
-        base["reason"] = (
-            f"biopsy_decision mismatch: gt={gt_decision!r} pred={pred_decision!r}"
-        )
+    if ds == 0.0:
+        base["gate"] = f"{task}_decision_failed"
+        base["reason"] = d_reason
         return base
+    if ds < 1.0:
+        base["gate"] = "partial_treatment_decision"
 
     # Granular evaluation
     cs = confidence_score(gt, pred)
@@ -730,9 +847,12 @@ def evaluate_case(
     # but record it in the reason.
     missing = [k for k, (v, _) in components.items() if v is None]
     score = sum((v if v is not None else 0.0) * w for v, w in components.values())
-    base["case_score"] = max(0.0, min(1.0, score))
+    base["case_score"] = max(0.0, min(1.0, score * ds))
 
-    parts = [f"tool: {t_reason}"]
+    parts = []
+    if ds < 1.0:
+        parts.append(d_reason)
+    parts.append(f"tool: {t_reason}")
     sg_ungrounded = sg_details.get("ungrounded_variables", [])
     if sg_ungrounded:
         parts.append(f"ungrounded_vars={sg_ungrounded}")
@@ -753,15 +873,16 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
     final_dag = mean(r["case_score"] for r in rows)
 
     decisions = [
-        (r["gt_biopsy_decision"], r["pred_biopsy_decision"])
+        (r.get("gt_decision"), r.get("pred_decision"))
         for r in rows
-        if r["gt_biopsy_decision"] in VALID_BIOPSY_DECISIONS
-        and r["pred_biopsy_decision"] in VALID_BIOPSY_DECISIONS
+        if r.get("gt_decision") is not None and r.get("pred_decision") is not None
     ]
     y_true = [g for g, _ in decisions]
     y_pred = [p for _, p in decisions]
-    n_correct = sum(int(a == b) for a, b in zip(y_true, y_pred))
-    n_incorrect = len(y_true) - n_correct
+    n_correct = sum(int(r.get("decision_score") == 1.0) for r in rows)
+    n_partial = sum(int(0.0 < r.get("decision_score", 0.0) < 1.0) for r in rows)
+    n_incorrect = len(decisions) - n_correct - n_partial
+    decision_scores = [r.get("decision_score", 0.0) for r in rows if r.get("pred_decision") is not None]
 
     conf_pairs = [
         (CONF_MAP[r["gt_biopsy_decision_conf"]], CONF_MAP[r["pred_biopsy_decision_conf"]])
@@ -777,7 +898,7 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
             flat_gt_w.append(gw)
             flat_pred_w.append(pw)
 
-    gate_pass = [r for r in rows if r["gate"] == "passed"]
+    gate_pass = [r for r in rows if r.get("decision_score", 0.0) > 0.0]
     gate_pass_rate = len(gate_pass) / n
     mean_among_pass = mean(r["case_score"] for r in gate_pass) if gate_pass else 0.0
 
@@ -789,10 +910,13 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
         "n_cases": n,
         "n_evaluated": len(decisions),
         "n_decision_correct": n_correct,
+        "n_decision_partial": n_partial,
         "n_decision_incorrect": n_incorrect,
         "final_DAG_score": final_dag,
-        "decision_accuracy": None,
+        "decision_accuracy": mean(decision_scores) if decision_scores else None,
+        "exact_decision_accuracy": None,
         "decision_f1_yes": None,
+        "decision_macro_f1": None,
         "confidence_weighted_kappa": None,
         "variable_weight_weighted_kappa": None,
         "mean_tool_score": mean(tool_scores) if tool_scores else None,
@@ -813,17 +937,23 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
     except Exception as exc:  # noqa: BLE001
         out["sklearn_unavailable"] = str(exc)
         if y_true:
-            out["decision_accuracy"] = sum(int(a == b) for a, b in zip(y_true, y_pred)) / len(y_true)
+            out["exact_decision_accuracy"] = sum(int(a == b) for a, b in zip(y_true, y_pred)) / len(y_true)
         return out
 
     if y_true:
-        out["decision_accuracy"] = float(accuracy_score(y_true, y_pred))
-        try:
-            out["decision_f1_yes"] = float(f1_score(y_true, y_pred, pos_label="yes", zero_division=0))
-        except Exception:
-            out["decision_f1_yes"] = None
+        out["exact_decision_accuracy"] = float(accuracy_score(y_true, y_pred))
+        if set(y_true) <= VALID_BIOPSY_DECISIONS and set(y_pred) <= VALID_BIOPSY_DECISIONS:
+            try:
+                out["decision_f1_yes"] = float(f1_score(y_true, y_pred, pos_label="yes", zero_division=0))
+            except Exception:
+                out["decision_f1_yes"] = None
+        else:
+            try:
+                out["decision_macro_f1"] = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
+            except Exception:
+                out["decision_macro_f1"] = None
         out["decision_classification_report"] = classification_report(
-            y_true, y_pred, labels=["yes", "no"], zero_division=0,
+            y_true, y_pred, labels=sorted(set(y_true) | set(y_pred)), zero_division=0,
         )
 
     if conf_pairs:
@@ -852,11 +982,19 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
 
 CSV_COLUMNS = [
     "case_id",
+    "task",
     "gate",
     "case_score",
+    "decision_score",
+    "decision_correct",
+    "gt_decision",
+    "pred_decision",
     "biopsy_decision_correct",
     "gt_biopsy_decision",
     "pred_biopsy_decision",
+    "treatment_decision_correct",
+    "gt_treatment_decision",
+    "pred_treatment_decision",
     "confidence_score",
     "variable_weight_score",
     "important_decisive_factor_score",
@@ -887,15 +1025,21 @@ def write_json(obj: Any, path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 def run() -> None:
-    if not TARGET_FILE.exists():
-        sys.exit(f"Missing target file: {TARGET_FILE}")
-    if not EVAL_FILE.exists():
-        sys.exit(f"Missing candidate file: {EVAL_FILE}")
-
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    targets = normalize_task_records(load_json(TARGET_FILE))
-    candidates = normalize_task_records(load_json(EVAL_FILE))
+    targets = load_case_directory_records(
+        GROUND_TRUTH_DIR,
+        GROUND_TRUTH_FILENAME,
+        "ground-truth",
+    )
+    candidates = load_case_directory_records(
+        TEST_OUTPUTS_DIR,
+        PREDICTION_FILENAME,
+        "prediction",
+    )
+
+    if not targets:
+        sys.exit(f"No target records found under {GROUND_TRUTH_DIR}")
 
     print(f"Loaded {len(targets)} target cases")
     print(f"Loaded {len(candidates)} candidate cases")
@@ -916,7 +1060,7 @@ def run() -> None:
         row["gt_biopsy_decision_conf"] = _norm_conf(gt.get("confidence"))
         row["pred_biopsy_decision_conf"] = _norm_conf(pred.get("confidence")) if pred else None
         weight_pairs: list[tuple[int, int]] = []
-        if pred and row["gate"] == "passed":
+        if pred and row.get("decision_score", 0.0) > 0.0:
             gt_w = gt.get("variable_weights") or {}
             pr_w = pred.get("variable_weights") or {}
             for var, gv in gt_w.items():
@@ -940,6 +1084,9 @@ def run() -> None:
         public_rows.append(pr)
 
     summary = {
+        "task_id": TASK_ID,
+        "ground_truth_dir": str(GROUND_TRUTH_DIR),
+        "test_outputs_dir": str(TEST_OUTPUTS_DIR),
         "judge_model": JUDGE_MODEL if USE_RATIONALE_JUDGE else None,
         "tool_metric": "DeepEval ToolCorrectnessMetric" if tool_metric is not None else "fallback",
         "rationale_judge_enabled": rationale_judge is not None,
@@ -963,12 +1110,15 @@ def run() -> None:
 
     print()
     print(f"Final case score (all cases): {fmt(aggregate.get('final_DAG_score'))}")
-    print(f"Biopsy decision F1_yes: {fmt(aggregate.get('decision_f1_yes'))}")
-    print(f"Biopsy decision accuracy: {fmt(aggregate.get('decision_accuracy'))}")
+    print(f"Decision F1_yes: {fmt(aggregate.get('decision_f1_yes'))}")
+    print(f"Decision macro F1: {fmt(aggregate.get('decision_macro_f1'))}")
+    print(f"Decision score accuracy: {fmt(aggregate.get('decision_accuracy'))}")
+    print(f"Exact decision accuracy: {fmt(aggregate.get('exact_decision_accuracy'))}")
     n_eval = aggregate.get('n_evaluated', 0)
     n_corr = aggregate.get('n_decision_correct', 'n/a')
+    n_part = aggregate.get('n_decision_partial', 'n/a')
     n_incorr = aggregate.get('n_decision_incorrect', 'n/a')
-    print(f"Biopsy decision correct/incorrect: {n_corr}/{n_incorr} (out of {n_eval} evaluated)")
+    print(f"Decision correct/partial/incorrect: {n_corr}/{n_part}/{n_incorr} (out of {n_eval} evaluated)")
     print(f"Confidence weighted kappa: {fmt(aggregate.get('confidence_weighted_kappa'))}")
     print(f"Variable-weight weighted kappa: {fmt(aggregate.get('variable_weight_weighted_kappa'))}")
     print(f"Mean tool score: {fmt(aggregate.get('mean_tool_score'))}")

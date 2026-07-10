@@ -1,0 +1,37 @@
+{
+  "source": "Pathologist (ground truth) form responses. Mirrors the JSON record exported by gt_formats/Henrik.html (schema 1.4). Each record is one urologist biopsy_decision_cot submission.",
+  "schema_version": "1.4",
+  "biopsy_decision": [
+    {
+      "schema_version": "1.4",
+      "task": "urologist_biopsy_decision_cot",
+      "case_type": "dataset",
+      "case_id": "BX_03",
+      "urologist": {"name": "Pathologist A", "years_expertise": 18},
+      "patient": {"id": "BX_03", "psa_ng_ml": 4.1, "age_years": 55},
+      "clinical_data": {
+        "pirads": "2", "psa_density": 0.08, "psa_velocity": 0.2, "prior_psa": 3.8, "prostate_vol": 51,
+        "months_last_psa": 12, "dre": "Benign", "prior_biopsy": "None", "family_hx": "No",
+        "cspca_prob": 0.10, "med_history": "None", "medication": "None", "notes": ""
+      },
+      "biopsy_decision": "no",
+      "confidence": "clear",
+      "decisive_variables": [{"variable": "PI-RADS", "flip_below": "3", "unit": "score"}],
+      "variable_weights": {
+        "pirads": "decisive", "psad": "important", "psa": "noted", "dre": "noted",
+        "cspca": "noted", "age": "not_used", "fh": "important", "vol": "noted", "bx": "not_used",
+        "comorbidity": "not_used"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "click", "ts": "2026-05-06T16:12:01.000Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "click", "ts": "2026-05-06T16:12:03.000Z"}
+      ],
+      "not_revealed_variables": [],
+      "repeat_test": "Repeat PSA in 12 months.",
+      "free_text": "PI-RADS \u2264 2 with PSA density < 0.20 and no family history. All criteria met to omit biopsy. Continue PSA surveillance.",
+      "summary_viewed": true,
+      "session_start": "2026-05-06T16:11:55.000Z",
+      "session_end":   "2026-05-06T16:13:00.000Z"
+    }
+  ]
+}

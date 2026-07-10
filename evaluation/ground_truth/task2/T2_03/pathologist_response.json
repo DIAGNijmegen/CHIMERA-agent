@@ -1,0 +1,97 @@
+{
+  "source": "Pathologist (ground truth) treatment-decision form responses. Mirrors JSON export from gt_formats/task2_pathologist_form.html (schema 1.0). Each record is one urologist_treatment_decision_cot submission.",
+  "schema_version": "1.0",
+  "treatment_decision": [
+    {
+      "schema_version": "1.0",
+      "task": "urologist_treatment_decision_cot",
+      "case_type": "dataset",
+      "case_id": "T2_03",
+      "urologist": {
+        "name": "Pathologist A",
+        "years_expertise": 18
+      },
+      "patient": {
+        "id": "T2-003",
+        "psa_ng_ml": 9.3,
+        "age_years": 70
+      },
+      "biopsy_results": {
+        "isup_grade": 3,
+        "isup_pred": 4,
+        "gleason_primary": 4,
+        "gleason_secondary": 3,
+        "gleason_tertiary": null,
+        "clinical_stage": "cT1c",
+        "dre": "Suspicious",
+        "active_treatment": 0,
+        "cores_positive": null,
+        "cores_total": null,
+        "max_core_pct": null,
+        "growth_pattern": "Cribriform, glomeruloid, partly also acinar",
+        "high_risk_patterns": "Cribriform pattern present",
+        "pni": null,
+        "lvi": null,
+        "tumor_location": "right"
+      },
+      "clinical_data": {
+        "pirads": "5",
+        "psa_density": 0.516,
+        "psa_velocity": 3.85,
+        "prostate_vol": 18.03,
+        "dre": "Suspicious",
+        "family_hx": "Yes",
+        "cspca_prob": 0.85247576,
+        "life_expectancy": null,
+        "ecog": null,
+        "patient_preference": null,
+        "med_history": "Hypertension, Type 2 diabetes",
+        "medication": "None",
+        "notes": "PSA 9.3 ng/mL. PI-RADS 5. PSAD 0.52. Prostate volume 18 mL. DRE suspicious. csPCa 0.85."
+      },
+      "treatment_recommendation": {
+        "primary": "active_treatment",
+        "modalities": [
+          "Radical prostatectomy"
+        ],
+        "detail": "Surgical pathway discussed given localized but high-risk features.",
+        "as_protocol": null,
+        "as_trigger": null
+      },
+      "confidence": "borderline",
+      "decisive_variables": [
+        {
+          "variable": "pirads",
+          "flip_at": "4",
+          "unit": "score"
+        }
+      ],
+      "variable_weights": {
+        "age": "important",
+        "bx_isup": "important",
+        "pirads": "decisive",
+        "ct": "important",
+        "psad": "important",
+        "bx_gl_sec": "important",
+        "comorbidity": "noted",
+        "fh": "important",
+        "cspca": "important",
+        "psa": "important",
+        "bx_gl_prim": "important"
+      },
+      "reveal_sequence": [
+        {"page": "decision", "order": 1, "key": "section_s3-path", "label": "Pathology report",        "value": "section", "via": "click", "ts": "2026-07-09T21:13:50.000Z"},
+        {"page": "decision", "order": 2, "key": "section_s3-mri",  "label": "Radiology / MRI report", "value": "section", "via": "click", "ts": "2026-07-09T21:13:52.000Z"},
+        {"page": "decision", "order": 3, "key": "section_s3-labs", "label": "Laboratory results",     "value": "section", "via": "click", "ts": "2026-07-09T21:13:54.000Z"},
+        {"page": "decision", "order": 4, "key": "section_s3-psa",  "label": "PSA trend",              "value": "section", "via": "click", "ts": "2026-07-09T21:13:56.000Z"},
+        {"page": "decision", "order": 5, "key": "section_s3-fh",   "label": "Family history (anamnesis)", "value": "section", "via": "click", "ts": "2026-07-09T21:13:58.000Z"},
+        {"page": "decision", "order": 6, "key": "section_s3-prev", "label": "Previous notes",         "value": "section", "via": "click", "ts": "2026-07-09T21:14:00.000Z"}
+      ],
+      "repeat_test": null,
+      "free_text": "ISUP 3 disease with PI-RADS 5 and high PSA density supports active treatment rather than surveillance.",
+      "summary_viewed": true,
+      "session_start": "2026-07-09T21:13:45.000Z",
+      "session_end": "2026-07-09T21:15:20.000Z"
+    }
+  ]
+}

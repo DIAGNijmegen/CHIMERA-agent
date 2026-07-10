@@ -5,9 +5,9 @@
 # whole pipeline runs from a single `docker run ...` invocation — as required
 # by the Grand Challenge platform (https://grand-challenge.org/).
 #
-# Runtime contract (Grand-Challenge friendly):
-#   /input/         (read-only)   target.json, evaluation_object.json,
-#                                  section_variable_mapping.json
+# Runtime contract:
+#   /ground_truth/  (read-only)   taskN/case_id/pathologist_response.json
+#   /test/outputs/  (read-only)   taskN/case_id/prediction.json
 #   /output/        (writable)    per_case_results.csv, aggregate_metrics.json,
 #                                  evaluation_results_summary.json
 #   /models/        (read/write)  Ollama model store (weights for the judge LLM)
@@ -53,14 +53,13 @@ COPY evaluate.py            /opt/app/evaluate.py
 COPY docker/entrypoint.sh   /opt/app/entrypoint.sh
 RUN chmod +x /opt/app/entrypoint.sh
 
-# Default copy of the section→variable mapping so the image is usable even if
-# /input only contains the two case JSONs.  Anything mounted at /input
-# overrides it via the env vars below.
-COPY mimic_datasets/section_variable_mapping.json \
+# Default copy of the section→variable mapping so the image can score section
+# grounding even when the mapping is not mounted separately.
+COPY ground_truth/section_variable_mapping.json \
      /opt/app/defaults/section_variable_mapping.json
 
-# ── Grand-Challenge style mount points ──────────────────────────────────────
-RUN mkdir -p /input /output /models \
+# ── Runtime mount points ────────────────────────────────────────────────────
+RUN mkdir -p /ground_truth /test/outputs /input /output /models \
  && chmod 0777 /output /models
 
 # ── Default environment ─────────────────────────────────────────────────────
@@ -73,56 +72,11 @@ ENV OLLAMA_HOST=127.0.0.1:11434 \
 ENV JUDGE_MODEL=gemma4:e4b \
     USE_RATIONALE_JUDGE=1 \
     ALLOW_MODEL_PULL=1
-# Evaluator I/O (point at Grand-Challenge mounts by default) ---------------
-ENV TARGET_FILE=/input/target.json \
-    EVAL_FILE=/input/evaluation_object.json \
-    SECTION_MAPPING_FILE=/input/section_variable_mapping.json \
-    EVAL_OUTPUT_DIR=/output
-# DeepEval / misc ----------------------------------------------------------
-ENV OPENAI_API_KEY=dummy-key-not-used \
-    DEEPEVAL_TELEMETRY_OPT_OUT=YES \
-    PYTHONUNBUFFERED=1 \
-    HOME=/tmp
-
-ENTRYPOINT ["/opt/app/entrypoint.sh"]
-CMD ["python", "/opt/app/evaluate.py"]
-
-
-# ── Python dependencies ─────────────────────────────────────────────────────
-COPY docker/requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -r /tmp/requirements.txt
-
-# ── Application code ────────────────────────────────────────────────────────
-WORKDIR /opt/app
-COPY evaluate.py            /opt/app/evaluate.py
-COPY docker/entrypoint.sh   /opt/app/entrypoint.sh
-RUN chmod +x /opt/app/entrypoint.sh
-
-# Default copy of the section→variable mapping so the image is usable even if
-# /input only contains the two case JSONs.  Anything mounted at /input
-# overrides it via the env vars below.
-COPY mimic_datasets/section_variable_mapping.json \
-     /opt/app/defaults/section_variable_mapping.json
-
-# ── Grand-Challenge style mount points ──────────────────────────────────────
-RUN mkdir -p /input /output /models \
- && chmod 0777 /output /models
-
-# ── Default environment ─────────────────────────────────────────────────────
-# Ollama --------------------------------------------------------------------
-ENV OLLAMA_HOST=127.0.0.1:11434 \
-    OLLAMA_MODELS=/models \
-    OLLAMA_KEEP_ALIVE=24h \
-    OLLAMA_BASE_URL=http://127.0.0.1:11434
-# Judge --------------------------------------------------------------------
-ENV JUDGE_MODEL=gemma4:e4b \
-    USE_RATIONALE_JUDGE=1 \
-    ALLOW_MODEL_PULL=1
-# Evaluator I/O (point at Grand-Challenge mounts by default) ---------------
-ENV TARGET_FILE=/input/target.json \
-    EVAL_FILE=/input/evaluation_object.json \
-    SECTION_MAPPING_FILE=/input/section_variable_mapping.json \
+# Evaluator I/O ------------------------------------------------------------
+ENV TASK_ID=task1 \
+    GROUND_TRUTH_DIR=/ground_truth/task1 \
+    TEST_OUTPUTS_DIR=/test/outputs/task1 \
+    SECTION_MAPPING_FILE=/ground_truth/section_variable_mapping.json \
     EVAL_OUTPUT_DIR=/output
 # DeepEval / misc ----------------------------------------------------------
 ENV OPENAI_API_KEY=dummy-key-not-used \

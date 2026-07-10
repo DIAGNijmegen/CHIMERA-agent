@@ -26,9 +26,12 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
 
     volumes:
-      # /input  — read-only inputs (target.json, evaluation_object.json,
-      #           section_variable_mapping.json).  Default = repo's mimic_datasets/.
-      - ${INPUT_DIR:-../mimic_datasets}:/input:ro
+      # /ground_truth — read-only pathologist responses, laid out as
+      #                 taskN/case_id/pathologist_response.json.
+      - ${GROUND_TRUTH_DIR:-../ground_truth}:/ground_truth:ro
+      # /test/outputs — read-only predictions, laid out as
+      #                 taskN/case_id/prediction.json.
+      - ${TEST_OUTPUTS_DIR:-../test/outputs}:/test/outputs:ro
       # /output — writable results directory on the host.
       - ${OUTPUT_DIR:-../results}:/output
       # /models — persistent Ollama model store (survives container removal,
@@ -41,6 +44,9 @@ services:
 
     environment:
       - HOME=/tmp
+      - TASK_ID=${TASK_ID:-task1}
+      - GROUND_TRUTH_DIR=/ground_truth/${TASK_ID:-task1}
+      - TEST_OUTPUTS_DIR=/test/outputs/${TASK_ID:-task1}
       - JUDGE_MODEL=${JUDGE_MODEL:-gemma4:e4b}
       - USE_RATIONALE_JUDGE=${USE_RATIONALE_JUDGE:-1}
       - ALLOW_MODEL_PULL=${ALLOW_MODEL_PULL:-1}

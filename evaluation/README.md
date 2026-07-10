@@ -1,7 +1,71 @@
-# LLM Biopsy-Decision Evaluator
+# LLM Evaluator
+# Instructions for coding
 
-Evaluates LLM-agent biopsy-decision form responses against pathologist
-ground-truth using a hybrid deterministic + LLM scoring pipeline.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+Evaluates LLM-agent biopsy- and treatment-decision form responses against
+pathologist ground-truth using a hybrid deterministic + LLM scoring pipeline.
 
 The whole pipeline (judge LLM + evaluator) lives in **one Docker image** so it
 can be submitted directly to the [Grand Challenge](https://grand-challenge.org/)
@@ -23,11 +87,13 @@ platform.
 │   ├── docker-compose.yml            # single-service compose (dev convenience)
 │   └── requirements.txt              # Python dependencies
 │
-├── mimic_datasets/
-│   ├── target.json                   # ground-truth pathologist responses
-│   ├── evaluation_object.json        # LLM-agent responses to evaluate
-│   ├── section_variable_mapping.json # form-section → clinical-variable map
-│   └── README.md                     # dataset schema documentation
+├── ground_truth/
+│   ├── section_variable_mapping.json
+│   └── task1/<case_id>/pathologist_response.json
+├── test/outputs/
+│   └── task1/<case_id>/prediction.json
+├── mimic_datasets/                   # archived/example dataset documentation
+│   └── README.md
 │
 ├── gt_formats/                       # ground-truth form templates (HTML)
 └── hpc/                              # optional Apptainer / SLURM wrappers
@@ -43,11 +109,12 @@ Generated at runtime (gitignored, never committed):
 
 The image follows a single, platform-agnostic mount contract:
 
-| Mount       | Mode | Contents                                                                                  |
-|-------------|------|-------------------------------------------------------------------------------------------|
-| `/input/`   | RO   | `target.json`, `evaluation_object.json`, `section_variable_mapping.json`                  |
-| `/output/`  | RW   | `per_case_results.csv`, `aggregate_metrics.json`, `evaluation_results_summary.json`       |
-| `/models/`  | RW   | Ollama model store (`blobs/`, `manifests/`). Persist + reuse across runs.                 |
+| Mount          | Mode | Contents                                                                                  |
+|----------------|------|-------------------------------------------------------------------------------------------|
+| `/ground_truth/` | RO | `taskN/<case_id>/pathologist_response.json`                                               |
+| `/test/outputs/` | RO | `taskN/<case_id>/prediction.json`                                                        |
+| `/output/`     | RW   | `per_case_results.csv`, `aggregate_metrics.json`, `evaluation_results_summary.json`       |
+| `/models/`     | RW   | Ollama model store (`blobs/`, `manifests/`). Persist + reuse across runs.                 |
 
 Nothing is baked into the image at runtime — both **data** and **model weights**
 are pulled from these mounts, exactly as Grand Challenge expects.
@@ -101,7 +168,9 @@ All settings live in `.env` (copy from `.env.example`):
 | `JUDGE_MODEL`         | `gemma4:e4b`             | Ollama model used as the rationale judge (~9.6 GB)                       |
 | `USE_RATIONALE_JUDGE` | `1`                      | `0` = skip the LLM judge step, fully deterministic                       |
 | `ALLOW_MODEL_PULL`    | `1`                      | `0` = forbid runtime download; fail fast if weights missing (offline)    |
-| `INPUT_DIR`           | `./mimic_datasets`       | Host path mounted read-only at `/input`                                  |
+| `TASK_ID`             | `task1`                  | Task directory to evaluate                                               |
+| `GROUND_TRUTH_DIR`    | `./ground_truth`         | Host root mounted read-only at `/ground_truth`                           |
+| `TEST_OUTPUTS_DIR`    | `./test/outputs`         | Host root mounted read-only at `/test/outputs`                           |
 | `OUTPUT_DIR`          | `./results`              | Host path mounted writable at `/output`                                  |
 | `OLLAMA_MODELS_DIR`   | `./models`               | Host path mounted at `/models` (Ollama weight cache)                     |
 | `COMPOSE_NAME_PREFIX` | `biopsy-eval`            | Container name prefix (useful on shared hosts)                           |
@@ -112,7 +181,8 @@ All settings live in `.env` (copy from `.env.example`):
 
 | Command            | What it does                                                                |
 |--------------------|-----------------------------------------------------------------------------|
-| `make run`         | Build image + run evaluation *(default)*                                    |
+| `make run`         | Build image + run one evaluation task *(default `TASK_ID=task1`)*           |
+| `make run-all`     | Build once, then run `task1` and `task2` sequentially into separate dirs    |
 | `make build`       | Build the unified evaluator image only                                      |
 | `make pull-model`  | Pre-populate `./models/` with `JUDGE_MODEL` for offline / Grand-Challenge   |
 | `make shell`       | Open a bash shell in the container (Ollama not auto-started)                |
@@ -138,9 +208,11 @@ make pull-model
 
 ```bash
 docker run --rm --gpus all \
-    -v "$PWD/mimic_datasets:/input:ro" \
+  -v "$PWD/ground_truth:/ground_truth:ro" \
+  -v "$PWD/test/outputs:/test/outputs:ro" \
     -v "$PWD/results:/output" \
     -v "$PWD/models:/models" \
+  -e TASK_ID=task1 \
     -e ALLOW_MODEL_PULL=0 \
     biopsy-evaluator:latest
 ```
@@ -158,8 +230,8 @@ docker push <your-gc-registry>/biopsy-evaluator:v1
 # … or use `docker save` if the challenge expects a tarball.
 ```
 
-On submission, Grand Challenge will mount its own `/input/`, `/output/`, and
-(if configured for the phase) `/models/` directories and run the container.
+On submission, Grand Challenge or the runner should mount `/ground_truth/`,
+`/test/outputs/`, `/output/`, and, if configured for the phase, `/models/`.
 
 > **If `/models` is NOT available on submission**, re-build the image with
 > the weights baked in:
@@ -175,9 +247,9 @@ On submission, Grand Challenge will mount its own `/input/`, `/output/`, and
 
 ## How the evaluation works
 
-### Stage 1 — Gate check (per case)
+### Stage 1 — Decision check (per case)
 
-A case must pass all three conditions to receive a component score:
+A Task 1 biopsy case must pass all three conditions to receive a component score:
 
 1. A matching candidate record exists (matched by `case_id`)
 2. The candidate passes schema validation (`biopsy_decision` ∈ {yes, no};
@@ -185,7 +257,14 @@ A case must pass all three conditions to receive a component score:
    [mimic_datasets/README.md](mimic_datasets/README.md) for the full schema
 3. The `biopsy_decision` field matches the ground truth exactly
 
-Cases that fail any gate receive `case_score = 0`.
+Task 1 cases that fail any gate receive `case_score = 0`.
+
+For Task 2 treatment decisions, `treatment_recommendation.primary` is scored
+across four canonical classes: `watchful_waiting`, `active_surveillance`,
+`continued_surveillance`, and `active_treatment`. Mismatches score 0, except
+`active_surveillance` vs `continued_surveillance`, which receives
+`decision_score = 0.5`. The remaining component score is multiplied by this
+decision score.
 
 ### Stage 2 — Component scores (gate-passed cases only)
 
@@ -207,7 +286,7 @@ penalised.
 **Section-grounding policy:** penalises the agent for weighting a variable
 above `not_used` without revealing the section that primarily provides that
 variable's data, per
-[mimic_datasets/section_variable_mapping.json](mimic_datasets/section_variable_mapping.json).
+[ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json).
 Always-available variables (`psa`, `age` from the patient card) are exempt.
 
 ### Aggregate metrics (dataset level)
@@ -229,21 +308,22 @@ Always-available variables (`psa`, `age` from the patient card) are exempt.
 
 ## Plugging in your own data
 
-Replace or augment the JSON files in `mimic_datasets/` (or point `INPUT_DIR`
-at any directory laid out the same way):
+Replace or augment the per-case JSON files under:
 
-- `target.json` — ground-truth expert responses
-- `evaluation_object.json` — LLM-agent responses to evaluate
-- `section_variable_mapping.json` — form-section → variable map (optional;
+- `ground_truth/<task_id>/<case_id>/pathologist_response.json` — ground-truth expert response
+- `test/outputs/<task_id>/<case_id>/prediction.json` — LLM-agent response to evaluate
+- `ground_truth/section_variable_mapping.json` — form-section → variable map (optional;
   a bundled default is used as fallback)
 
 See [mimic_datasets/README.md](mimic_datasets/README.md) for the full record
 schema. Case IDs in both files are matched by the `case_id` field.
 
-Point the evaluator at custom files without editing `.env`:
+Point the evaluator at custom roots without editing `.env`:
 
 ```bash
-INPUT_DIR=/path/to/my-inputs \
+TASK_ID=task1 \
+GROUND_TRUTH_DIR=/path/to/ground_truth \
+TEST_OUTPUTS_DIR=/path/to/test/outputs \
 OUTPUT_DIR=/path/to/my-results \
 make run
 ```
