@@ -5,12 +5,14 @@
 # whole pipeline runs from a single `docker run ...` invocation — as required
 # by the Grand Challenge platform (https://grand-challenge.org/).
 #
-# Runtime contract:
-#   /ground_truth/  (read-only)   taskN/case_id/pathologist_response.json
-#   /test/outputs/  (read-only)   taskN/case_id/prediction.json
-#   /output/        (writable)    per_case_results.csv, aggregate_metrics.json,
-#                                  evaluation_results_summary.json
-#   /models/        (read/write)  Ollama model store (weights for the judge LLM)
+# Runtime contract (Grand-Challenge layout — see external/example_evaluation_method):
+#   /input/                          (read-only)  taskN/case_id/prediction.json
+#   /opt/ml/input/data/ground_truth/ (read-only)  taskN/case_id/pathologist_response.json
+#                                                 section_variable_mapping.json
+#   /output/                         (writable)   metrics.json, per_case_results.csv,
+#                                                 aggregate_metrics.json,
+#                                                 evaluation_results_summary.json
+#   /models/                         (read/write) Ollama model store (judge LLM weights)
 #
 # GPU access requires the NVIDIA Container Toolkit on the host
 # (`docker run --gpus all ...`).  CPU-only runs work too if
@@ -58,8 +60,8 @@ RUN chmod +x /opt/app/entrypoint.sh
 COPY ground_truth/section_variable_mapping.json \
      /opt/app/defaults/section_variable_mapping.json
 
-# ── Runtime mount points ────────────────────────────────────────────────────
-RUN mkdir -p /ground_truth /test/outputs /input /output /models \
+# ── Runtime mount points (Grand-Challenge layout) ───────────────────────────
+RUN mkdir -p /input /opt/ml/input/data/ground_truth /output /models \
  && chmod 0777 /output /models
 
 # ── Default environment ─────────────────────────────────────────────────────
@@ -74,9 +76,9 @@ ENV JUDGE_MODEL=gemma4:e4b \
     ALLOW_MODEL_PULL=1
 # Evaluator I/O ------------------------------------------------------------
 ENV TASK_ID=task1 \
-    GROUND_TRUTH_DIR=/ground_truth/task1 \
-    TEST_OUTPUTS_DIR=/test/outputs/task1 \
-    SECTION_MAPPING_FILE=/ground_truth/section_variable_mapping.json \
+    GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth/task1 \
+    TEST_OUTPUTS_DIR=/input/task1 \
+    SECTION_MAPPING_FILE=/opt/ml/input/data/ground_truth/section_variable_mapping.json \
     EVAL_OUTPUT_DIR=/output
 # DeepEval / misc ----------------------------------------------------------
 ENV OPENAI_API_KEY=dummy-key-not-used \

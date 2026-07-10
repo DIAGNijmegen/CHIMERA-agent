@@ -1,90 +1,19 @@
 # LLM Evaluator
-# Instructions for coding
 
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
-
----
-
-Evaluates LLM-agent biopsy- and treatment-decision form responses against
-pathologist ground-truth using a hybrid deterministic + LLM scoring pipeline.
-
-The whole pipeline (judge LLM + evaluator) lives in **one Docker image** so it
-can be submitted directly to the [Grand Challenge](https://grand-challenge.org/)
-platform.
-
----
 
 ## Repo layout
 
 ```
 .
 ├── evaluate.py                       # main evaluation script
-├── Makefile                          # entry point: `make run`
+├── do_build.sh                       # build the evaluator image
+├── do_test_run.sh                    # entry point: build + run one task
+├── do_save.sh                        # package image + ground_truth.tar.gz for GC
 ├── .env.example                      # configuration template → copy to .env
 │
 ├── docker/
 │   ├── Dockerfile                    # single image: Python evaluator + Ollama judge
 │   ├── entrypoint.sh                 # starts Ollama, ensures model, runs evaluate.py
-│   ├── docker-compose.yml            # single-service compose (dev convenience)
 │   └── requirements.txt              # Python dependencies
 │
 ├── ground_truth/
@@ -92,11 +21,9 @@ platform.
 │   └── task1/<case_id>/pathologist_response.json
 ├── test/outputs/
 │   └── task1/<case_id>/prediction.json
-├── mimic_datasets/                   # archived/example dataset documentation
-│   └── README.md
 │
-├── gt_formats/                       # ground-truth form templates (HTML)
-└── hpc/                              # optional Apptainer / SLURM wrappers
+├── external/                          # Grand-Challenge reference method (do not edit)
+└── pathologist_forms/                 # ground-truth form templates (HTML)
 ```
 
 Generated at runtime (gitignored, never committed):
@@ -107,13 +34,14 @@ Generated at runtime (gitignored, never committed):
 
 ## Container contract (Grand-Challenge layout)
 
-The image follows a single, platform-agnostic mount contract:
+The image follows the Grand-Challenge mount contract (mirrors
+`external/example_evaluation_method`):
 
 | Mount          | Mode | Contents                                                                                  |
 |----------------|------|-------------------------------------------------------------------------------------------|
-| `/ground_truth/` | RO | `taskN/<case_id>/pathologist_response.json`                                               |
-| `/test/outputs/` | RO | `taskN/<case_id>/prediction.json`                                                        |
-| `/output/`     | RW   | `per_case_results.csv`, `aggregate_metrics.json`, `evaluation_results_summary.json`       |
+| `/input/`        | RO | `taskN/<case_id>/prediction.json` (algorithm outputs)                                    |
+| `/opt/ml/input/data/ground_truth/` | RO | `taskN/<case_id>/pathologist_response.json`, `section_variable_mapping.json` (from the ground-truth tarball) |
+| `/output/`     | RW   | `metrics.json`, `per_case_results.csv`, `aggregate_metrics.json`, `evaluation_results_summary.json` |
 | `/models/`     | RW   | Ollama model store (`blobs/`, `manifests/`). Persist + reuse across runs.                 |
 
 Nothing is baked into the image at runtime — both **data** and **model weights**
@@ -142,7 +70,7 @@ are pulled from these mounts, exactly as Grand Challenge expects.
 ```bash
 # 1. Clone
 git clone <repo-url>
-cd <repo-name>
+cd <repo-name>/evaluation
 
 # 2. Configure
 cp .env.example .env
@@ -150,11 +78,12 @@ cp .env.example .env
 #    Defaults are fine on a single-GPU workstation.
 
 # 3. Build the image, start Ollama inside it, pull the judge model (first
-#    run only, ~9.6 GB), and run the evaluator.
-make run
+#    run only, ~9.6 GB), and run the evaluator for one task.
+./do_test_run.sh                       # TASK_ID=task1
+TASK_ID=task2 GPU_DEVICE_ID=1 ./do_test_run.sh
 ```
 
-Results land in `results/` with host-user ownership (not root).
+Results land in `results/<TASK_ID>/` with host-user ownership (not root).
 
 ---
 
@@ -166,29 +95,26 @@ All settings live in `.env` (copy from `.env.example`):
 |-----------------------|--------------------------|--------------------------------------------------------------------------|
 | `GPU_DEVICE_ID`       | `0`                      | GPU index exposed to the container (`nvidia-smi` to check)               |
 | `JUDGE_MODEL`         | `gemma4:e4b`             | Ollama model used as the rationale judge (~9.6 GB)                       |
-| `USE_RATIONALE_JUDGE` | `1`                      | `0` = skip the LLM judge step, fully deterministic                       |
+| `USE_RATIONALE_JUDGE` | `1`                      | `0` = skip the LLM judge step, fully deterministic (no GPU)              |
 | `ALLOW_MODEL_PULL`    | `1`                      | `0` = forbid runtime download; fail fast if weights missing (offline)    |
-| `TASK_ID`             | `task1`                  | Task directory to evaluate                                               |
-| `GROUND_TRUTH_DIR`    | `./ground_truth`         | Host root mounted read-only at `/ground_truth`                           |
-| `TEST_OUTPUTS_DIR`    | `./test/outputs`         | Host root mounted read-only at `/test/outputs`                           |
-| `OUTPUT_DIR`          | `./results`              | Host path mounted writable at `/output`                                  |
-| `OLLAMA_MODELS_DIR`   | `./models`               | Host path mounted at `/models` (Ollama weight cache)                     |
-| `COMPOSE_NAME_PREFIX` | `biopsy-eval`            | Container name prefix (useful on shared hosts)                           |
+| `TASK_ID`             | `task1`                  | Task directory to evaluate (also positional arg 1 to `do_test_run.sh`)  |
 
 ---
 
-## Makefile targets
+## Scripts
 
 | Command            | What it does                                                                |
 |--------------------|-----------------------------------------------------------------------------|
-| `make run`         | Build image + run one evaluation task *(default `TASK_ID=task1`)*           |
-| `make run-all`     | Build once, then run `task1` and `task2` sequentially into separate dirs    |
-| `make build`       | Build the unified evaluator image only                                      |
-| `make pull-model`  | Pre-populate `./models/` with `JUDGE_MODEL` for offline / Grand-Challenge   |
-| `make shell`       | Open a bash shell in the container (Ollama not auto-started)                |
-| `make down`        | Stop and remove the container                                               |
-| `make clean`       | Remove the built image                                                      |
-| `make help`        | List all targets                                                            |
+| `./do_test_run.sh` | Build image + run one evaluation task *(default `TASK_ID=task1`)*           |
+| `./do_build.sh`    | Build the unified evaluator image only                                      |
+| `./do_save.sh`     | Build + `docker save` the image and pack `ground_truth.tar.gz` for GC       |
+
+Run both tasks (task2 on GPU 1):
+
+```bash
+./do_test_run.sh task1
+TASK_ID=task2 GPU_DEVICE_ID=1 ./do_test_run.sh
+```
 
 ---
 
@@ -200,48 +126,45 @@ without network access. The image is built to handle that:
 ### 1. Prepare the model weights once
 
 ```bash
-# Downloads gemma4:e4b into ./models/ on the host
-make pull-model
+# Populate ./models/ with the judge weights by running one task with network
+# access (the entrypoint pulls JUDGE_MODEL into the mounted /models store).
+./do_test_run.sh task1
 ```
 
 ### 2. Test the offline run locally first
 
 ```bash
-docker run --rm --gpus all \
-  -v "$PWD/ground_truth:/ground_truth:ro" \
-  -v "$PWD/test/outputs:/test/outputs:ro" \
-    -v "$PWD/results:/output" \
-    -v "$PWD/models:/models" \
+docker run --rm --gpus "device=1" \
+  -v "$PWD/test/outputs:/input:ro" \
+  -v "$PWD/ground_truth:/opt/ml/input/data/ground_truth:ro" \
+  -v "$PWD/results/task1:/output" \
+  -v "$PWD/models:/models" \
   -e TASK_ID=task1 \
-    -e ALLOW_MODEL_PULL=0 \
-    biopsy-evaluator:latest
+  -e ALLOW_MODEL_PULL=0 \
+  biopsy-evaluator:latest
 ```
 
 If this succeeds with no network access, the same invocation will work on
 Grand Challenge.
 
-### 3. Submit
-
-Export and submit the tagged image as required by the challenge phase:
+### 3. Package + submit
 
 ```bash
-docker tag  biopsy-evaluator:latest  <your-gc-registry>/biopsy-evaluator:v1
-docker push <your-gc-registry>/biopsy-evaluator:v1
-# … or use `docker save` if the challenge expects a tarball.
+./do_save.sh    # writes biopsy-evaluator_<timestamp>.tar.gz + ground_truth.tar.gz
 ```
 
-On submission, Grand Challenge or the runner should mount `/ground_truth/`,
-`/test/outputs/`, `/output/`, and, if configured for the phase, `/models/`.
+Upload the image tarball as the Evaluation Method and `ground_truth.tar.gz`
+separately under **Phase settings > Ground Truths** (extracted to
+`/opt/ml/input/data/ground_truth/` at runtime).
+
+On submission, Grand Challenge mounts `/input/`,
+`/opt/ml/input/data/ground_truth/`, `/output/`, and, if configured for the
+phase, `/models/`.
 
 > **If `/models` is NOT available on submission**, re-build the image with
-> the weights baked in:
-> ```bash
-> make pull-model                              # populate ./models/
-> docker build -t biopsy-evaluator:offline \
->     --build-arg BAKE_MODELS=1 -f docker/Dockerfile .
-> ```
-> and add a `COPY models/ /models/` line to the Dockerfile gated on the build
-> arg. (Not enabled by default to keep the image small.)
+> the weights baked in: populate `./models/` (run one task first), add a
+> `COPY models/ /models/` line to the Dockerfile, and rebuild. (Not enabled
+> by default to keep the image small.)
 
 ---
 

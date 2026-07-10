@@ -23,15 +23,25 @@ using:
         GEval rubric evaluated by a local Ollama model (gemma4:e4b by default).
         Disabled when USE_RATIONALE_JUDGE=0 or Ollama is unreachable.
 
-Outputs (written to results/):
+Outputs (written to /output — see README.md):
 
+    metrics.json                      Grand-Challenge ranking file
+                                      ({"aggregates": {...}, "results": [...]})
     evaluation_results_summary.json   full per-case + aggregate dump
     per_case_results.csv              one row per case, easy to scan
     aggregate_metrics.json            dataset-level summary
 
+Grand-Challenge container contract (see external/example_evaluation_method):
+
+    /input/                        (read-only)  predictions  → $TASK_ID/<case_id>/prediction.json
+    /opt/ml/input/data/ground_truth/ (read-only) ground-truth tarball
+                                                → $TASK_ID/<case_id>/pathologist_response.json
+                                                → section_variable_mapping.json
+    /output/                       (writable)   metrics.json + the reports above
+
 Run via Docker (recommended — see README.md):
 
-    make run
+    ./do_test_run.sh                # builds + runs one task
 
 Or directly (Ollama must be reachable at OLLAMA_BASE_URL):
 
@@ -1099,10 +1109,16 @@ def run() -> None:
     summary_path = OUTPUT_DIR / "evaluation_results_summary.json"
     csv_path = OUTPUT_DIR / "per_case_results.csv"
     agg_path = OUTPUT_DIR / "aggregate_metrics.json"
+    metrics_path = OUTPUT_DIR / "metrics.json"
 
     write_json(summary, summary_path)
     write_csv(public_rows, csv_path)
     write_json(aggregate, agg_path)
+
+    # Grand-Challenge ranking file. Mirrors the shape of the reference
+    # evaluation method (external/example_evaluation_method): an "aggregates"
+    # block used for leaderboard ranking plus per-case "results".
+    write_json({"aggregates": aggregate, "results": public_rows}, metrics_path)
 
     # Console summary
     def fmt(v: Any) -> str:
@@ -1127,6 +1143,7 @@ def run() -> None:
     print(f"Mean case score (among gate passed cases): {fmt(aggregate.get('mean_case_score_among_gate_passed'))}")
     print()
     print("Saved:")
+    print(f"  {metrics_path}")
     print(f"  {summary_path}")
     print(f"  {csv_path}")
     print(f"  {agg_path}")
