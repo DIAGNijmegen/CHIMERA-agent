@@ -1,273 +1,317 @@
-# LLM Evaluator
+# CHIMERA Evaluation Pipeline
+
+This directory contains the Grand-Challenge-style evaluator for CHIMERA agent
+outputs. It compares per-case agent predictions against pathologist ground truth
+for Task 1 biopsy decisions and Task 2 treatment decisions, then writes both the
+Grand Challenge ranking file and local debugging reports.
+
+The evaluator runs as a single Docker image that contains:
+
+- the Python scoring pipeline in [evaluate.py](evaluate.py)
+- an embedded Ollama server for the optional rationale judge
+- all Python dependencies needed for deterministic metrics and LLM judging
 
 
-## Repo layout
 
-```
-.
-├── evaluate.py                       # main evaluation script
-├── do_build.sh                       # build the evaluator image
-├── do_test_run.sh                    # entry point: build + run one task
-├── do_save.sh                        # package image + ground_truth.tar.gz for GC
-├── .env.example                      # configuration template → copy to .env
+## Repository Layout
+
+```text
+evaluation/
+├── evaluate.py                       # main deterministic + optional LLM evaluator
+├── do_build.sh                       # builds chimera-evaluator:latest
+├── do_test_run.sh                    # builds once, then runs one or more tasks locally
+├── do_save.sh                        # saves the image and packs ground_truth.tar.gz
+├── .env.example                      # optional local configuration template
 │
 ├── docker/
-│   ├── Dockerfile                    # single image: Python evaluator + Ollama judge
-│   ├── entrypoint.sh                 # starts Ollama, ensures model, runs evaluate.py
+│   ├── Dockerfile                    # Ollama base image + Python evaluator runtime
+│   ├── entrypoint.sh                 # starts Ollama, checks model, runs evaluate.py
 │   └── requirements.txt              # Python dependencies
 │
 ├── ground_truth/
 │   ├── section_variable_mapping.json
-│   └── task1/<case_id>/pathologist_response.json
-├── test/outputs/
-│   └── task1/<case_id>/prediction.json
+│   ├── task1/<case_id>/pathologist_response.json
+│   └── task2/<case_id>/pathologist_response.json
 │
-├── external/                          # Grand-Challenge reference method (do not edit)
-└── pathologist_forms/                 # ground-truth form templates (HTML)
+├── test/outputs/
+│   ├── task1/<case_id>/prediction.json
+│   └── task2/<case_id>/prediction.json
+│
+├── results/                          # generated local outputs, gitignored
+├── models/                           # generated Ollama model cache, gitignored
+├── pathologist_forms/                # HTML form templates
+
 ```
 
-Generated at runtime (gitignored, never committed):
-- `results/` — evaluation output files
-- `models/` — Ollama model-weight cache (the judge LLM)
+## Container Contract
 
----
+The image mirrors the Grand Challenge evaluation-method layout while preserving
+the CHIMERA per-case JSON schema.
 
-## Container contract (Grand-Challenge layout)
+| Mount | Mode | Contents |
+| --- | --- | --- |
+| `/input/` | read-only | `taskN/<case_id>/prediction.json` agent outputs |
+| `/opt/ml/input/data/ground_truth/` | read-only | `taskN/<case_id>/pathologist_response.json` plus `section_variable_mapping.json` |
+| `/output/` | writable | `metrics.json`, `aggregate_metrics.json`, `per_case_results.csv`, `evaluation_results_summary.json` |
+| `/models/` | read/write | Ollama model store used by the rationale judge |
 
-The image follows the Grand-Challenge mount contract (mirrors
-`external/example_evaluation_method`):
-
-| Mount          | Mode | Contents                                                                                  |
-|----------------|------|-------------------------------------------------------------------------------------------|
-| `/input/`        | RO | `taskN/<case_id>/prediction.json` (algorithm outputs)                                    |
-| `/opt/ml/input/data/ground_truth/` | RO | `taskN/<case_id>/pathologist_response.json`, `section_variable_mapping.json` (from the ground-truth tarball) |
-| `/output/`     | RW   | `metrics.json`, `per_case_results.csv`, `aggregate_metrics.json`, `evaluation_results_summary.json` |
-| `/models/`     | RW   | Ollama model store (`blobs/`, `manifests/`). Persist + reuse across runs.                 |
-
-Nothing is baked into the image at runtime — both **data** and **model weights**
-are pulled from these mounts, exactly as Grand Challenge expects.
-
----
+Local runs bind-mount [test/outputs](test/outputs) to `/input` and
+[ground_truth](ground_truth) to `/opt/ml/input/data/ground_truth`. The directory
+structure under those folders remains the original CHIMERA structure.
 
 ## Prerequisites
 
-- **Docker Engine** (your user in the `docker` group)
-- **NVIDIA driver + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)** for GPU access:
-  ```bash
-  sudo nvidia-ctk runtime configure --runtime=docker
-  sudo systemctl restart docker
-  ```
-- **One NVIDIA GPU with ≥ 10 GB VRAM** (RTX 3090, A10, A100, …) for the
-  default `gemma4:e4b` judge.
+- Docker Engine with permission to run containers.
+- NVIDIA driver and NVIDIA Container Toolkit for GPU judging.
+- One GPU with enough VRAM for the judge model. The default `gemma4:e4b` needs
+  roughly 10 GB of model storage and is intended for a 24 GB-class GPU.
 
-> **No GPU / fast smoke test?** Set `USE_RATIONALE_JUDGE=0` in `.env`. The
-> evaluator then runs fully deterministically with no GPU required.
+For a deterministic smoke test with no GPU and no Ollama model, set
+`USE_RATIONALE_JUDGE=0`.
 
----
+## Quick Start
 
-## Quick start (local development)
+From this directory:
 
 ```bash
-# 1. Clone
-git clone <repo-url>
-cd <repo-name>/evaluation
+cd ~/CHIMERA-agent/evaluation
 
-# 2. Configure
-cp .env.example .env
-#    Edit GPU_DEVICE_ID if your target GPU is not device 0 (check: nvidia-smi).
-#    Defaults are fine on a single-GPU workstation.
+# Run Task 1 on the default GPU from .env or GPU_DEVICE_ID=0.
+./do_test_run.sh task1
 
-# 3. Build the image, start Ollama inside it, pull the judge model (first
-#    run only, ~9.6 GB), and run the evaluator for one task.
-./do_test_run.sh                       # TASK_ID=task1
-TASK_ID=task2 GPU_DEVICE_ID=1 ./do_test_run.sh
+# Run Task 1 and Task 2 sequentially on GPU 1.
+GPU_DEVICE_ID=1 ./do_test_run.sh task1 task2
 ```
 
-Results land in `results/<TASK_ID>/` with host-user ownership (not root).
+`do_test_run.sh` builds `chimera-evaluator:latest` once, validates all requested
+task directories up front, then runs each task in order. Results are written to
+separate task directories:
 
----
+```text
+results/task1/
+results/task2/
+```
+
+The first judge-enabled run may download `JUDGE_MODEL` into [models](models).
+Subsequent runs reuse the same mounted model store.
 
 ## Configuration
 
-All settings live in `.env` (copy from `.env.example`):
+You can either export variables inline or copy [.env.example](.env.example) to
+`.env`. `do_test_run.sh` loads `.env` automatically if it exists.
 
-| Variable              | Default                  | Description                                                              |
-|-----------------------|--------------------------|--------------------------------------------------------------------------|
-| `GPU_DEVICE_ID`       | `0`                      | GPU index exposed to the container (`nvidia-smi` to check)               |
-| `JUDGE_MODEL`         | `gemma4:e4b`             | Ollama model used as the rationale judge (~9.6 GB)                       |
-| `USE_RATIONALE_JUDGE` | `1`                      | `0` = skip the LLM judge step, fully deterministic (no GPU)              |
-| `ALLOW_MODEL_PULL`    | `1`                      | `0` = forbid runtime download; fail fast if weights missing (offline)    |
-| `TASK_ID`             | `task1`                  | Task directory to evaluate (also positional arg 1 to `do_test_run.sh`)  |
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DOCKER_IMAGE_TAG` | `chimera-evaluator:latest` | Image tag used by all scripts |
+| `TASK_ID` | `task1` | Task to run when no positional task args are provided |
+| `GPU_DEVICE_ID` | `0` | Host GPU exposed to Docker when judging is enabled |
+| `JUDGE_MODEL` | `gemma4:e4b` | Ollama model used by the rationale judge |
+| `USE_RATIONALE_JUDGE` | `1` | `0` disables Ollama and runs deterministic metrics only |
+| `ALLOW_MODEL_PULL` | `1` | `0` forbids runtime model download and fails if missing |
 
----
+Examples:
+
+```bash
+# Deterministic, CPU-only smoke test.
+USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1
+
+# Offline-style run after ./models has already been populated.
+GPU_DEVICE_ID=1 ALLOW_MODEL_PULL=0 ./do_test_run.sh task1 task2
+
+# Build under a custom image tag.
+DOCKER_IMAGE_TAG=chimera-evaluator:dev ./do_build.sh
+```
 
 ## Scripts
 
-| Command            | What it does                                                                |
-|--------------------|-----------------------------------------------------------------------------|
-| `./do_test_run.sh` | Build image + run one evaluation task *(default `TASK_ID=task1`)*           |
-| `./do_build.sh`    | Build the unified evaluator image only                                      |
-| `./do_save.sh`     | Build + `docker save` the image and pack `ground_truth.tar.gz` for GC       |
+### Build Only
 
-Run both tasks (task2 on GPU 1):
+```bash
+./do_build.sh
+```
+
+Builds `chimera-evaluator:latest` from [docker/Dockerfile](docker/Dockerfile)
+using this directory as the build context.
+
+### Local Test Run
 
 ```bash
 ./do_test_run.sh task1
-TASK_ID=task2 GPU_DEVICE_ID=1 ./do_test_run.sh
+./do_test_run.sh task1 task2
+GPU_DEVICE_ID=1 ./do_test_run.sh task1 task2
 ```
 
----
+For each requested task, the script mounts:
 
-## Running on Grand Challenge (or any `docker run` host)
+- [test/outputs](test/outputs) as `/input:ro`
+- [ground_truth](ground_truth) as `/opt/ml/input/data/ground_truth:ro`
+- `results/<task>` as `/output`
+- [models](models) as `/models`
 
-Grand Challenge invokes evaluation containers without Compose and (typically)
-without network access. The image is built to handle that:
+It also runs as the host user so generated files are not owned by root.
 
-### 1. Prepare the model weights once
+### Package for Grand Challenge
 
 ```bash
-# Populate ./models/ with the judge weights by running one task with network
-# access (the entrypoint pulls JUDGE_MODEL into the mounted /models store).
-./do_test_run.sh task1
+./do_save.sh
 ```
 
-### 2. Test the offline run locally first
+This rebuilds the image, writes an image tarball such as
+`chimera-evaluator_<timestamp>.tar.gz`, and packs
+`ground_truth.tar.gz` from [ground_truth](ground_truth).
+
+Upload the image tarball as the evaluation method and upload
+`ground_truth.tar.gz` separately as the phase ground truth. Grand Challenge
+extracts that tarball to `/opt/ml/input/data/ground_truth/` at runtime.
+
+## Manual Docker Run
+
+The scripts are the preferred entry point, but this is the equivalent shape for
+a single task on GPU 1:
 
 ```bash
-docker run --rm --gpus "device=1" \
+mkdir -p results/task1 models
+
+docker run --rm \
+  --gpus "device=1" \
+  --platform=linux/amd64 \
+  --user "$(id -u):$(id -g)" \
   -v "$PWD/test/outputs:/input:ro" \
   -v "$PWD/ground_truth:/opt/ml/input/data/ground_truth:ro" \
   -v "$PWD/results/task1:/output" \
   -v "$PWD/models:/models" \
+  -v /etc/passwd:/etc/passwd:ro \
+  -v /etc/group:/etc/group:ro \
+  -e HOME=/tmp \
   -e TASK_ID=task1 \
-  -e ALLOW_MODEL_PULL=0 \
-  biopsy-evaluator:latest
+  -e GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth/task1 \
+  -e TEST_OUTPUTS_DIR=/input/task1 \
+  -e SECTION_MAPPING_FILE=/opt/ml/input/data/ground_truth/section_variable_mapping.json \
+  -e EVAL_OUTPUT_DIR=/output \
+  -e JUDGE_MODEL=gemma4:e4b \
+  -e USE_RATIONALE_JUDGE=1 \
+  -e ALLOW_MODEL_PULL=1 \
+  chimera-evaluator:latest
 ```
 
-If this succeeds with no network access, the same invocation will work on
-Grand Challenge.
+For an offline check after the model exists in `/models`, add
+`-e ALLOW_MODEL_PULL=0`. To disable the judge entirely, set
+`-e USE_RATIONALE_JUDGE=0` and omit `--gpus`.
 
-### 3. Package + submit
+## Outputs
 
-```bash
-./do_save.sh    # writes biopsy-evaluator_<timestamp>.tar.gz + ground_truth.tar.gz
+Each task writes these files under `results/<task>/` locally or `/output/` in
+the container:
+
+| File | Purpose |
+| --- | --- |
+| `metrics.json` | Grand-Challenge-facing ranking file with `aggregates` and per-case `results` |
+| `aggregate_metrics.json` | Dataset-level metrics only |
+| `per_case_results.csv` | Flat per-case table for quick inspection |
+| `evaluation_results_summary.json` | Full run summary with aggregate metrics and per-case details |
+
+## Evaluation Logic
+
+### Stage 1: Decision Gate
+
+The evaluator first matches predictions to ground truth by `case_id`.
+
+For Task 1, the `biopsy_decision` must be valid (`yes` or `no`) and match the
+pathologist response exactly. A mismatch receives `case_score = 0`.
+
+For Task 2, `treatment_recommendation.primary` is scored across:
+
+- `watchful_waiting`
+- `active_surveillance`
+- `continued_surveillance`
+- `active_treatment`
+
+Exact matches receive full decision credit. `active_surveillance` versus
+`continued_surveillance` receives partial credit (`decision_score = 0.5`). Other
+mismatches receive zero.
+
+### Stage 2: Component Scores
+
+Cases that pass the decision gate receive a weighted component score.
+
+| Component | Method | Weight with judge | Weight without judge |
+| --- | --- | ---: | ---: |
+| Confidence | Ordinal distance over `uncertain`, `borderline`, `clear` | 0.20 | 0.225 |
+| Variable weights | Mean ordinal error over `not_used`, `noted`, `important`, `decisive` | 0.25 | 0.275 |
+| Important/decisive factors | Set F1 over variables marked `important` or `decisive` | 0.15 | 0.175 |
+| Tool efficiency | Precision of agent revealed sections against pathologist revealed sections | 0.15 | 0.150 |
+| Section grounding | Fraction of actively weighted variables grounded by revealed source sections | 0.15 | 0.175 |
+| Rationale alignment | DeepEval GEval rubric via local Ollama | 0.10 | disabled |
+
+If the rationale judge is disabled or unavailable, the non-rationale weights are
+renormalized through the fixed no-judge weighting shown above.
+
+### Tool-Use Policy
+
+The tool score penalizes unnecessary reveals only:
+
+```text
+score = |agent_revealed ∩ pathologist_revealed| / |agent_revealed|
 ```
 
-Upload the image tarball as the Evaluation Method and `ground_truth.tar.gz`
-separately under **Phase settings > Ground Truths** (extracted to
-`/opt/ml/input/data/ground_truth/` at runtime).
+Missing pathologist reveals are not penalized. Extra agent reveals are
+penalized uniformly.
 
-On submission, Grand Challenge mounts `/input/`,
-`/opt/ml/input/data/ground_truth/`, `/output/`, and, if configured for the
-phase, `/models/`.
+### Section-Grounding Policy
 
-> **If `/models` is NOT available on submission**, re-build the image with
-> the weights baked in: populate `./models/` (run one task first), add a
-> `COPY models/ /models/` line to the Dockerfile, and rebuild. (Not enabled
-> by default to keep the image small.)
-
----
-
-## How the evaluation works
-
-### Stage 1 — Decision check (per case)
-
-A Task 1 biopsy case must pass all three conditions to receive a component score:
-
-1. A matching candidate record exists (matched by `case_id`)
-2. The candidate passes schema validation (`biopsy_decision` ∈ {yes, no};
-   `variable_weights` is a dict if present) — see
-   [mimic_datasets/README.md](mimic_datasets/README.md) for the full schema
-3. The `biopsy_decision` field matches the ground truth exactly
-
-Task 1 cases that fail any gate receive `case_score = 0`.
-
-For Task 2 treatment decisions, `treatment_recommendation.primary` is scored
-across four canonical classes: `watchful_waiting`, `active_surveillance`,
-`continued_surveillance`, and `active_treatment`. Mismatches score 0, except
-`active_surveillance` vs `continued_surveillance`, which receives
-`decision_score = 0.5`. The remaining component score is multiplied by this
-decision score.
-
-### Stage 2 — Component scores (gate-passed cases only)
-
-All component scores are in `[0, 1]`:
-
-| Component                       | Method                                                                                                                | Weight (w/ judge) | Weight (w/o) |
-|---------------------------------|-----------------------------------------------------------------------------------------------------------------------|-------------------|--------------|
-| **Confidence**                  | Ordinal distance: `1 − \|gt − pred\| / 2`                                                                             | 0.20              | 0.225        |
-| **Variable weights**            | Mean ordinal MAE across all variables                                                                                 | 0.25              | 0.275        |
-| **Important / decisive factors**| Set-F1 between `important + decisive` variable sets                                                                   | 0.15              | 0.175        |
-| **Tool-efficiency precision**   | `\|agent ∩ pathologist\| / \|agent revealed\|`                                                                        | 0.15              | 0.150        |
-| **Section grounding**           | `n_grounded / n_weighted` — fraction of weighted variables whose primary source section the agent actually revealed   | 0.15              | 0.175        |
-| **Rationale alignment**         | GEval rubric judged by Ollama (`USE_RATIONALE_JUDGE=0` to disable)                                                    | 0.10              | —            |
-
-**Tool-score policy:** the agent is penalised only for revealing sections the
-pathologist did not reveal (unnecessary lookups). Missing reveals are not
-penalised.
-
-**Section-grounding policy:** penalises the agent for weighting a variable
-above `not_used` without revealing the section that primarily provides that
-variable's data, per
+Section grounding checks whether variables weighted above `not_used` are
+supported by sections the agent actually revealed, using
 [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json).
-Always-available variables (`psa`, `age` from the patient card) are exempt.
+Always-available variables such as `psa` and `age` are exempt.
 
-### Aggregate metrics (dataset level)
+## Key Aggregate Metrics
 
-| Metric                              | Description                                                       |
-|-------------------------------------|-------------------------------------------------------------------|
-| `final_DAG_score`                   | Mean case score (gate failures count as 0)                        |
-| `decision_accuracy`                 | Fraction of cases with correct `biopsy_decision`                  |
-| `decision_f1_yes`                   | F1 for the positive (`yes`) class                                 |
-| `n_decision_correct/incorrect`      | Raw counts                                                        |
-| `confidence_weighted_kappa`         | Quadratic Cohen's κ on confidence labels                          |
-| `variable_weight_weighted_kappa`    | Quadratic Cohen's κ across all variable weights                   |
-| `mean_tool_score`                   | Mean tool-efficiency precision                                    |
-| `mean_section_grounding_score`      | Mean section grounding score across gate-passed cases             |
-| `decision_gate_pass_rate`           | Fraction of cases that passed the hard gate                       |
-| `mean_case_score_among_gate_passed` | Mean component score excluding gate failures                      |
+| Metric | Meaning |
+| --- | --- |
+| `final_DAG_score` | Mean case score across all cases, including gate failures |
+| `decision_accuracy` | Mean decision score, including partial Task 2 credit |
+| `exact_decision_accuracy` | Exact decision-match accuracy |
+| `decision_f1_yes` | Task 1 positive-class F1 for biopsy `yes` |
+| `decision_macro_f1` | Multiclass macro F1 for non-binary decision tasks |
+| `confidence_weighted_kappa` | Quadratic weighted kappa over confidence labels |
+| `variable_weight_weighted_kappa` | Quadratic weighted kappa over variable weights |
+| `mean_tool_score` | Mean tool-efficiency precision |
+| `mean_section_grounding_score` | Mean section-grounding score |
+| `mean_rationale_score` | Mean LLM rationale score when enabled |
+| `decision_gate_pass_rate` | Fraction of cases with nonzero decision score |
+| `mean_case_score_among_gate_passed` | Mean case score excluding decision-gate failures |
 
----
+## Adding or Replacing Data
 
-## Plugging in your own data
+Use the existing CHIMERA directory layout:
 
-Replace or augment the per-case JSON files under:
-
-- `ground_truth/<task_id>/<case_id>/pathologist_response.json` — ground-truth expert response
-- `test/outputs/<task_id>/<case_id>/prediction.json` — LLM-agent response to evaluate
-- `ground_truth/section_variable_mapping.json` — form-section → variable map (optional;
-  a bundled default is used as fallback)
-
-See [mimic_datasets/README.md](mimic_datasets/README.md) for the full record
-schema. Case IDs in both files are matched by the `case_id` field.
-
-Point the evaluator at custom roots without editing `.env`:
-
-```bash
-TASK_ID=task1 \
-GROUND_TRUTH_DIR=/path/to/ground_truth \
-TEST_OUTPUTS_DIR=/path/to/test/outputs \
-OUTPUT_DIR=/path/to/my-results \
-make run
+```text
+ground_truth/<task_id>/<case_id>/pathologist_response.json
+test/outputs/<task_id>/<case_id>/prediction.json
 ```
 
----
+The evaluator accepts either a flat list, a task-keyed list such as
+`{"biopsy_decision": [...]}`, or a single record object when loading each JSON
+file. Records are matched by `case_id`, with `patient.id` as a fallback.
 
-## Biopsy-decision guidelines (Task 1)
+Keep [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json)
+updated when adding variables that should participate in section-grounding.
 
-The pathologist ground-truth follows these rules:
+## Common Commands
 
-**Biopsy YES**
-- PI-RADS ≥ 4 → biopsy (targeted + perilesional)
-- PI-RADS 3 + PSA density ≥ 0.10 ng/mL/cc → biopsy
-- PI-RADS 3 + family history of PCa → biopsy
-- PI-RADS ≤ 2 + PSA density ≥ 0.20 ng/mL/cc → biopsy
-- PI-RADS ≤ 2 + family history → biopsy
+```bash
+# Build only.
+./do_build.sh
 
-**Biopsy NO (PSA monitoring instead)**
-- PI-RADS 3 + PSA density < 0.10 + no family history → defer
-- PI-RADS ≤ 2 + PSA density < 0.20 + no family history → defer
+# Run both supported tasks on GPU 1.
+GPU_DEVICE_ID=1 ./do_test_run.sh task1 task2
 
-**Override (comorbidity / life expectancy)**
-- Severe comorbidity with life expectancy < 10 years → watchful waiting,
-  not biopsy
+# Run deterministic metrics only.
+USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1 task2
+
+# Run offline after the model store has been populated.
+GPU_DEVICE_ID=1 ALLOW_MODEL_PULL=0 ./do_test_run.sh task1 task2
+
+# Package image + ground truth tarball for Grand Challenge.
+./do_save.sh
+```
