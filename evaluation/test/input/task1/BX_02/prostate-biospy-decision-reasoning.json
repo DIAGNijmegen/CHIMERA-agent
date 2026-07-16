@@ -1,0 +1,27 @@
+{
+  "free_text": "The presence of a high-risk PI-RADS 4 lesion on MRI, the patient's prior positive biopsy, and the elevated PSAD drove the recommendation for a biopsy to further evaluate the lesion and assess for clinically significant prostate cancer.",
+  "confidence": "clear",
+  "variable_weights": {
+    "psa": "noted",
+    "age": "noted",
+    "dre": "noted",
+    "comorbidity": "not_used",
+    "bx": "important",
+    "pirads": "decisive",
+    "psad": "important",
+    "vol": "noted",
+    "cspca": "important",
+    "fh": "not_used"
+  },
+  "reveal_sequence": [
+    {
+      "page": "decision",
+      "order": 1,
+      "key": "section_s3-mri",
+      "label": "Radiology / MRI report",
+      "value": "section",
+      "via": "tool_call",
+      "ts": "2026-07-15T23:56:01.392Z"
+    }
+  ]
+}

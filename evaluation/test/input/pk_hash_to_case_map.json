@@ -1,0 +1,12 @@
+{
+  "source": "evaluation/test/input/predictions.json",
+  "mapping_rule": "1-2 -> interf0/case1, interf0/case2; 3-4 -> interf1/case1, interf2/case2; 5-6 -> interf2/case1, interf2/case2",
+  "pk_to_case": {
+    "f79179b7-36f6-5d8e-848c-8b02b7d53f32": "test/input/task1/BX_01",
+    "3e003820-6e6f-58f2-893e-59ac9093685f": "test/input/task1/BX_02",
+    "82fcf203-32a2-5f82-939b-df25af0635b1": "test/input/task2/T2_01",
+    "b01faf7a-e72f-5f90-b5c3-03f5f47fafce": "test/input/task2/T2_02",
+    "bc22ed46-d645-541f-b5a8-f9c6977e8473": "test/input/task3/T3-006",
+    "b64acd95-fd5f-52ae-b9c8-526160a7fb9f": "test/input/task3/T3-009"
+  }
+}

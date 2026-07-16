@@ -13,7 +13,7 @@
 # 5. Shut Ollama down cleanly and propagate the evaluator exit code.
 #
 # Runtime paths (Grand-Challenge layout):
-#   /input/                          read-only predictions (taskN/case_id/prediction.json)
+#   /input/                          read-only predictions.json + pk_hash_to_case_map.json
 #   /opt/ml/input/data/ground_truth/ read-only pathologist responses + section mapping
 #   /output/                         writable results
 #   /models/                         Ollama weight store (judge model)

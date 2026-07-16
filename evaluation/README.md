@@ -1,9 +1,15 @@
 # CHIMERA Evaluation Pipeline
 
+
 This directory contains the Grand-Challenge-style evaluator for CHIMERA agent
 outputs. It compares per-case agent predictions against pathologist ground truth
-for Task 1 biopsy decisions and Task 2 treatment decisions, then writes both the
-Grand Challenge ranking file and local debugging reports.
+for Task 1 biopsy decisions, Task 2 treatment decisions, and Task 3
+biochemical-recurrence prediction, then writes both the Grand Challenge ranking
+file and local debugging reports.
+
+Agent outputs are read from a single Grand-Challenge predictions dump
+(`test/input/predictions.json`). That file carries no `case_id`, so
+`test/input/pk_hash_to_case_map.json` maps each job `pk` to its `taskN/<case_id>`.
 
 The evaluator runs as a single Docker image that contains:
 
@@ -31,11 +37,12 @@ evaluation/
 ├── ground_truth/
 │   ├── section_variable_mapping.json
 │   ├── task1/<case_id>/pathologist_response.json
-│   └── task2/<case_id>/pathologist_response.json
+│   ├── task2/<case_id>/pathologist_response.json
+│   └── task3/<case_id>/prostate-time-to-recurrence-or-last-follow-up.json
 │
-├── test/outputs/
-│   ├── task1/<case_id>/prediction.json
-│   └── task2/<case_id>/prediction.json
+├── test/input/
+│   ├── predictions.json              # Grand Challenge job dump (all tasks)
+│   └── pk_hash_to_case_map.json      # job pk -> taskN/<case_id>
 │
 ├── results/                          # generated local outputs, gitignored
 ├── models/                           # generated Ollama model cache, gitignored
@@ -50,12 +57,12 @@ the CHIMERA per-case JSON schema.
 
 | Mount | Mode | Contents |
 | --- | --- | --- |
-| `/input/` | read-only | `taskN/<case_id>/prediction.json` agent outputs |
-| `/opt/ml/input/data/ground_truth/` | read-only | `taskN/<case_id>/pathologist_response.json` plus `section_variable_mapping.json` |
+| `/input/` | read-only | `predictions.json` (all-task job dump) + `pk_hash_to_case_map.json` |
+| `/opt/ml/input/data/ground_truth/` | read-only | `taskN/<case_id>/` pathologist responses (Task 1/2) or recurrence outcome (Task 3) plus `section_variable_mapping.json` |
 | `/output/` | writable | `metrics.json`, `aggregate_metrics.json`, `per_case_results.csv`, `evaluation_results_summary.json` |
 | `/models/` | read/write | Ollama model store used by the rationale judge |
 
-Local runs bind-mount [test/outputs](test/outputs) to `/input` and
+Local runs bind-mount [test/input](test/input) to `/input` and
 [ground_truth](ground_truth) to `/opt/ml/input/data/ground_truth`. The directory
 structure under those folders remains the original CHIMERA structure.
 
@@ -79,8 +86,8 @@ cd ~/CHIMERA-agent/evaluation
 # Run Task 1 on the default GPU from .env or GPU_DEVICE_ID=0.
 ./do_test_run.sh task1
 
-# Run Task 1 and Task 2 sequentially on GPU 1.
-GPU_DEVICE_ID=1 ./do_test_run.sh task1 task2
+# Run all three tasks sequentially 
+ ./do_test_run.sh task1 task2 task3
 ```
 
 `do_test_run.sh` builds `chimera-evaluator:latest` once, validates all requested
@@ -90,6 +97,7 @@ separate task directories:
 ```text
 results/task1/
 results/task2/
+results/task3/
 ```
 
 The first judge-enabled run may download `JUDGE_MODEL` into [models](models).
@@ -138,7 +146,7 @@ using this directory as the build context.
 ```bash
 ./do_test_run.sh task1
 ./do_test_run.sh task1 task2
-GPU_DEVICE_ID=1 ./do_test_run.sh task1 task2
+GPU_DEVICE_ID=0 ./do_test_run.sh task1 task2
 ```
 
 For each requested task, the script mounts:
@@ -212,9 +220,15 @@ the container:
 
 ## Evaluation Logic
 
-### Stage 1: Decision Gate
+Agent outputs are read from `test/input/predictions.json`. Each job's task is
+identified from its input sockets, and its `case_id` is recovered from
+`test/input/pk_hash_to_case_map.json`. The evaluator iterates over ground-truth
+cases; a ground-truth case with no matching prediction is reported as a missing
+candidate with `case_score = 0`.
 
-The evaluator first matches predictions to ground truth by `case_id`.
+### Stage 1: Decision Gate (Task 1 / Task 2)
+
+The evaluator matches predictions to ground truth by `case_id`.
 
 For Task 1, the `biopsy_decision` must be valid (`yes` or `no`) and match the
 pathologist response exactly. A mismatch receives `case_score = 0`.
@@ -264,6 +278,34 @@ supported by sections the agent actually revealed, using
 [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json).
 Always-available variables such as `psa` and `age` are exempt.
 
+## Task 3: Biochemical Recurrence
+
+Task 3 predicts time to biochemical recurrence. The ground truth for each case
+is a single object with `months_to_recurrence` and `event` (1 = recurrence
+observed, 0 = censored at last follow-up). There are no variable weights,
+confidence, or reveal sequences, so the decision gate and the Task 1/2 component
+scores do not apply.
+
+Each case is scored on three components:
+
+| Component | Method | Weight with judge | Weight without judge |
+| --- | --- | ---: | ---: |
+| Event agreement | 1.0 if predicted `event` matches ground truth, else 0.0 | 0.35 | 0.50 |
+| Time closeness | Censoring-aware closeness of `months_to_recurrence` | 0.35 | 0.50 |
+| Reasoning | DeepEval GEval rubric via local Ollama (no reference rationale) | 0.30 | disabled |
+
+Time closeness is censoring-aware: for observed recurrences (`event = 1`) the
+predicted time should match the true time; for censored cases (`event = 0`) only
+predictions that recur *earlier* than the last follow-up are penalized.
+
+The reasoning judge has no reference rationale to compare against (the ground
+truth carries only the outcome), so it scores clinical soundness and internal
+consistency of the agent's free text against the clinical inputs and the
+reference outcome.
+
+At the dataset level, Task 3 also reports Harrell's concordance index over the
+cohort, using predicted months as the risk ordering.
+
 ## Key Aggregate Metrics
 
 | Metric | Meaning |
@@ -281,21 +323,42 @@ Always-available variables such as `psa` and `age` are exempt.
 | `decision_gate_pass_rate` | Fraction of cases with nonzero decision score |
 | `mean_case_score_among_gate_passed` | Mean case score excluding decision-gate failures |
 
+Task 3 (biochemical recurrence) reports a different set:
+
+| Metric | Meaning |
+| --- | --- |
+| `final_DAG_score` | Mean case score across all Task 3 cases |
+| `recurrence_event_accuracy` | Fraction of cases with correct `event` |
+| `mean_event_score` | Mean event-agreement score |
+| `mean_time_score` | Mean censoring-aware time score |
+| `event1_time_mae_months` | Mean absolute months error over observed recurrences |
+| `concordance_index` | Harrell's C-index over the cohort (None if no comparable pairs) |
+| `mean_rationale_score` | Mean Task 3 reasoning-judge score when enabled |
+
 ## Adding or Replacing Data
 
-Use the existing CHIMERA directory layout:
+Ground truth uses the CHIMERA per-case directory layout:
 
 ```text
-ground_truth/<task_id>/<case_id>/pathologist_response.json
-test/outputs/<task_id>/<case_id>/prediction.json
+ground_truth/task1/<case_id>/pathologist_response.json
+ground_truth/task2/<case_id>/pathologist_response.json
+ground_truth/task3/<case_id>/prostate-time-to-recurrence-or-last-follow-up.json
 ```
 
-The evaluator accepts either a flat list, a task-keyed list such as
-`{"biopsy_decision": [...]}`, or a single record object when loading each JSON
-file. Records are matched by `case_id`, with `patient.id` as a fallback.
+The case directory name is the authoritative `case_id`. For Task 1 and Task 2
+the evaluator accepts a flat list, a task-keyed list such as
+`{"biopsy_decision": [...]}`, or a single record object. Task 3 ground truth is a
+bare `{"months_to_recurrence": ..., "event": ...}` object.
+
+Agent outputs come from `test/input/predictions.json` (a Grand Challenge job
+dump). Each job's task is identified from its input sockets, and its case is
+recovered from `test/input/pk_hash_to_case_map.json`, which maps each job `pk`
+to `taskN/<case_id>`. Ground-truth cases with no matching prediction are
+reported as missing candidates.
 
 Keep [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json)
-updated when adding variables that should participate in section-grounding.
+updated when adding variables that should participate in section-grounding
+(Task 1 / Task 2 only).
 
 ## Common Commands
 
@@ -303,14 +366,14 @@ updated when adding variables that should participate in section-grounding.
 # Build only.
 ./do_build.sh
 
-# Run both supported tasks on GPU 1.
-GPU_DEVICE_ID=1 ./do_test_run.sh task1 task2
+# Run all three tasks on GPU 3.
+GPU_DEVICE_ID=3 ./do_test_run.sh task1 task2 task3
 
-# Run deterministic metrics only.
-USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1 task2
+# Run deterministic metrics only (no GPU / no judge).
+USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1 task2 task3
 
 # Run offline after the model store has been populated.
-GPU_DEVICE_ID=1 ALLOW_MODEL_PULL=0 ./do_test_run.sh task1 task2
+GPU_DEVICE_ID=3 ALLOW_MODEL_PULL=0 ./do_test_run.sh task1 task2 task3
 
 # Package image + ground truth tarball for Grand Challenge.
 ./do_save.sh

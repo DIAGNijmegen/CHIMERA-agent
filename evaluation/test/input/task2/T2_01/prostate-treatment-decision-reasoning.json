@@ -1,0 +1,19 @@
+{
+  "free_text": "The high-risk lesion on mpMRI (PI-RADS 4) and aggressive cancer on biopsy (Gleason 3+4, ISUP Grade Group 2) drove the recommendation for active surveillance with close monitoring.",
+  "confidence": "clear",
+  "variable_weights": {
+    "psa": "important",
+    "age": "noted",
+    "ct": "not_used",
+    "comorbidity": "not_used",
+    "pirads": "decisive",
+    "psad": "not_used",
+    "cspca": "not_used",
+    "bx_gl_prim": "important",
+    "bx_gl_sec": "not_used",
+    "bx_gl_tert": "not_used",
+    "bx_isup": "decisive",
+    "fh": "not_used"
+  },
+  "reveal_sequence": []
+}

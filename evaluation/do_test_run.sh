@@ -3,7 +3,7 @@
 # Build + run one evaluation task locally, using the Grand-Challenge mount
 # contract.
 #
-#   /input                          <- ./test/outputs        (read-only)
+#   /input                          <- ./test/input          (read-only)
 #   /opt/ml/input/data/ground_truth <- ./ground_truth        (read-only)
 #   /output                         <- ./results/<TASK_ID>    (writable)
 #   /models                         <- ./models              (Ollama weights)
@@ -12,8 +12,8 @@
 #   ./do_test_run.sh                 # TASK_ID=task1 on GPU_DEVICE_ID=0
 #   TASK_ID=task2 GPU_DEVICE_ID=1 ./do_test_run.sh
 #   ./do_test_run.sh task2           # positional TASK_ID override
-#   ./do_test_run.sh task1 task2     # run both tasks sequentially
-#   GPU_DEVICE_ID=1 ./do_test_run.sh task1 task2   # both, on GPU 1
+#   ./do_test_run.sh task1 task2 task3   # run all three tasks sequentially
+#   GPU_DEVICE_ID=3 ./do_test_run.sh task1 task2 task3   # all, on GPU 3
 #
 # Config (env or ./.env):
 #   TASK_ID              task directory to evaluate     (default: task1)
@@ -51,17 +51,17 @@ JUDGE_MODEL="${JUDGE_MODEL:-gemma4:e4b}"
 USE_RATIONALE_JUDGE="${USE_RATIONALE_JUDGE:-1}"
 ALLOW_MODEL_PULL="${ALLOW_MODEL_PULL:-1}"
 
-INPUT_DIR="${SCRIPT_DIR}/test/outputs"
+INPUT_DIR="${SCRIPT_DIR}/test/input"
 GROUND_TRUTH_DIR="${SCRIPT_DIR}/ground_truth"
 MODELS_DIR="${SCRIPT_DIR}/models"
 
 
-# ── Sanity checks (validate every task up front) ─────────────────────────────
+# ── Sanity checks (validate every task up front) ─────────────────────────
+if [[ ! -f "${INPUT_DIR}/predictions.json" ]]; then
+  echo "ERROR: no predictions.json found at ${INPUT_DIR}/predictions.json" >&2
+  exit 1
+fi
 for TASK_ID in "${TASKS[@]}"; do
-  if [[ ! -d "${INPUT_DIR}/${TASK_ID}" ]]; then
-    echo "ERROR: no predictions found at ${INPUT_DIR}/${TASK_ID}" >&2
-    exit 1
-  fi
   if [[ ! -d "${GROUND_TRUTH_DIR}/${TASK_ID}" ]]; then
     echo "ERROR: no ground truth found at ${GROUND_TRUTH_DIR}/${TASK_ID}" >&2
     exit 1
@@ -105,7 +105,8 @@ for TASK_ID in "${TASKS[@]}"; do
       --env HOME=/tmp \
       --env TASK_ID="${TASK_ID}" \
       --env GROUND_TRUTH_DIR="/opt/ml/input/data/ground_truth/${TASK_ID}" \
-      --env TEST_OUTPUTS_DIR="/input/${TASK_ID}" \
+      --env PREDICTIONS_FILE="/input/predictions.json" \
+      --env PK_CASE_MAP_FILE="/input/pk_hash_to_case_map.json" \
       --env SECTION_MAPPING_FILE=/opt/ml/input/data/ground_truth/section_variable_mapping.json \
       --env EVAL_OUTPUT_DIR=/output \
       --env JUDGE_MODEL="${JUDGE_MODEL}" \
