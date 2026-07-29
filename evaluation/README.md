@@ -1,36 +1,74 @@
 # CHIMERA Evaluation Pipeline
 
+Grand-Challenge evaluation container for CHIMERA agent outputs. It scores agent
+predictions against pathologist ground truth for three tasks and writes both the
+Grand Challenge ranking file and local debugging reports.
 
-This directory contains the Grand-Challenge-style evaluator for CHIMERA agent
-outputs. It compares per-case agent predictions against pathologist ground truth
-for Task 1 biopsy decisions, Task 2 treatment decisions, and Task 3
-biochemical-recurrence prediction, then writes both the Grand Challenge ranking
-file and local debugging reports.
+| Task | Question | Decision label |
+| --- | --- | --- |
+| Task 1 | Should this patient be biopsied? | `yes` / `no` |
+| Task 2 | Which treatment is recommended? | one of four labels |
+| Task 3 | When will biochemical recurrence occur? | `months_to_recurrence` + `event` |
 
-Agent outputs are read from a single Grand-Challenge predictions dump
-(`test/input/predictions.json`). That file carries no `case_id`, so
-`test/input/pk_hash_to_case_map.json` maps each job `pk` to its `taskN/<case_id>`.
+Everything ships in **one Docker image**: the Python scoring pipeline, an
+embedded Ollama server, and the judge LLM weights themselves. The container
+needs no network at runtime, which is what Grand Challenge requires.
 
-The evaluator runs as a single Docker image that contains:
+## How Input Handling Works
 
-- the Python scoring pipeline in [evaluate.py](evaluate.py)
-- an embedded Ollama server for the optional rationale judge
-- all Python dependencies needed for deterministic metrics and LLM judging
+Input handling is a deliberate copy of the reference evaluation method in
+[external/example_evaluation_method/evaluate.py](external/example_evaluation_method/evaluate.py).
+Only the *scoring* and the *emitted metrics* differ.
 
+```text
+/input/predictions.json          one entry per algorithm job
+        │
+        ├── job["inputs"]  ──► sorted tuple of socket slugs = "interface key"
+        │                         └──► selects process_interf0 / 1 / 2
+        │
+        └── job["outputs"] ──► socket "relative_path"
+                                  └──► /input/<job_pk>/<relative_path>
+```
 
+1. **Interface switch.** `get_interface_key(job)` builds the sorted tuple of the
+   job's *input* socket slugs. That tuple identifies the task.
+2. **Handler picking.** The key selects one of three handlers, exactly as in the
+   template:
+
+   | Interface key (sorted input slugs) | Handler | Task |
+   | --- | --- | --- |
+   | `prostate-biopsy-decision-clinical-data`, `prostate-modality-level-neural-representations`, `structured-prompt` | `process_interf0` | Task 1 |
+   | `prostate-modality-level-neural-representations`, `prostate-treatment-decision-clinical-data`, `structured-prompt` | `process_interf1` | Task 2 |
+   | `prostate-modality-level-neural-representations`, `prostate-time-to-recurrence-or-last-follow-up-clin`, `structured-prompt` | `process_interf2` | Task 3 |
+
+3. **Reading outputs from the pk.** Each handler calls `get_file_location(job_pk=..., values=job["outputs"], slug=...)`,
+   which resolves the socket's `relative_path` under the job pk directory and
+   reads it with `load_json_file`. Agent outputs are always read from **files**,
+   never from inline values.
+4. **Case id only.** `pk_hash_to_case_map.json` is used for one thing: turning a
+   job `pk` into the ground-truth `case_id`. It plays no part in locating files.
+
+Jobs whose interface belongs to a different task than `TASK_ID` are skipped.
+Ground-truth cases with no matching job are reported as missing candidates with
+`case_score = 0` rather than crashing.
+
+> **Path note.** Grand Challenge nests job outputs under
+> `<job_pk>/output/<relative_path>`. This repository keeps them flat at
+> `<job_pk>/<relative_path>`. `get_file_location` accepts whichever exists, so
+> the same image works locally and on the platform.
 
 ## Repository Layout
 
 ```text
 evaluation/
-├── evaluate.py                       # main deterministic + optional LLM evaluator
+├── evaluate.py                       # deterministic + optional LLM evaluator
 ├── do_build.sh                       # builds chimera-evaluator:latest
-├── do_test_run.sh                    # builds once, then runs one or more tasks locally
+├── do_test_run.sh                    # builds once, then runs one or more tasks
 ├── do_save.sh                        # saves the image and packs ground_truth.tar.gz
 ├── .env.example                      # optional local configuration template
 │
 ├── docker/
-│   ├── Dockerfile                    # Ollama base image + Python evaluator runtime
+│   ├── Dockerfile                    # Ollama base + Python runtime + baked judge model
 │   ├── entrypoint.sh                 # starts Ollama, checks model, runs evaluate.py
 │   └── requirements.txt              # Python dependencies
 │
@@ -42,43 +80,36 @@ evaluation/
 │
 ├── test/input/
 │   ├── predictions.json              # Grand Challenge job dump (all tasks)
-│   └── pk_hash_to_case_map.json      # job pk -> taskN/<case_id>
+│   ├── pk_hash_to_case_map.json      # job pk -> taskN/<case_id>
+│   └── <job_pk>/<relative_path>.json # agent output files, one dir per job
 │
 ├── results/                          # generated local outputs, gitignored
-├── models/                           # generated Ollama model cache, gitignored
 ├── pathologist_forms/                # HTML form templates
-
 ```
 
 ## Container Contract
 
-The image mirrors the Grand Challenge evaluation-method layout while preserving
-the CHIMERA per-case JSON schema.
-
 | Mount | Mode | Contents |
 | --- | --- | --- |
-| `/input/` | read-only | `predictions.json` (all-task job dump) + `pk_hash_to_case_map.json` |
+| `/input/` | read-only | `predictions.json`, `pk_hash_to_case_map.json`, and one directory per job pk holding that job's output files |
 | `/opt/ml/input/data/ground_truth/` | read-only | `taskN/<case_id>/` pathologist responses (Task 1/2) or recurrence outcome (Task 3) plus `section_variable_mapping.json` |
 | `/output/` | writable | `metrics.json`, `aggregate_metrics.json`, `per_case_results.csv`, `evaluation_results_summary.json` |
-| `/models/` | read/write | Ollama model store used by the rationale judge |
+| `/tmp/` | writable | scratch only; nothing here is persisted |
 
-Local runs bind-mount [test/input](test/input) to `/input` and
-[ground_truth](ground_truth) to `/opt/ml/input/data/ground_truth`. The directory
-structure under those folders remains the original CHIMERA structure.
+The judge weights live at `/opt/ollama-models` **inside the image**. That path is
+not a mount point, so nothing can shadow it.
 
 ## Prerequisites
 
 - Docker Engine with permission to run containers.
 - NVIDIA driver and NVIDIA Container Toolkit for GPU judging.
-- One GPU with enough VRAM for the judge model. The default `gemma4:e4b` needs
-  roughly 10 GB of model storage and is intended for a 24 GB-class GPU.
+- One GPU with enough VRAM for the judge model.
+- Network access **at build time only**, to pull the judge weights into the image.
 
-For a deterministic smoke test with no GPU and no Ollama model, set
+For a deterministic smoke test with no GPU and no judge, set
 `USE_RATIONALE_JUDGE=0`.
 
 ## Quick Start
-
-From this directory:
 
 ```bash
 cd ~/CHIMERA-agent/evaluation
@@ -86,13 +117,13 @@ cd ~/CHIMERA-agent/evaluation
 # Run Task 1 on the default GPU from .env or GPU_DEVICE_ID=0.
 ./do_test_run.sh task1
 
-# Run all three tasks sequentially 
- ./do_test_run.sh task1 task2 task3
+# Run all three tasks sequentially
+./do_test_run.sh task1 task2 task3
 ```
 
 `do_test_run.sh` builds `chimera-evaluator:latest` once, validates all requested
-task directories up front, then runs each task in order. Results are written to
-separate task directories:
+task directories up front, then runs each task **offline** (`--network none`),
+just like Grand Challenge. Results are written to separate task directories:
 
 ```text
 results/task1/
@@ -100,22 +131,19 @@ results/task2/
 results/task3/
 ```
 
-The first judge-enabled run may download `JUDGE_MODEL` into [models](models).
-Subsequent runs reuse the same mounted model store.
-
 ## Configuration
 
-You can either export variables inline or copy [.env.example](.env.example) to
-`.env`. `do_test_run.sh` loads `.env` automatically if it exists.
+Export variables inline or copy [.env.example](.env.example) to `.env`;
+`do_test_run.sh` loads `.env` automatically if it exists.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DOCKER_IMAGE_TAG` | `chimera-evaluator:latest` | Image tag used by all scripts |
 | `TASK_ID` | `task1` | Task to run when no positional task args are provided |
 | `GPU_DEVICE_ID` | `0` | Host GPU exposed to Docker when judging is enabled |
-| `JUDGE_MODEL` | `gemma4:e4b` | Ollama model used by the rationale judge |
+| `JUDGE_MODEL` | `gemma4:e4b` | Ollama model baked in at build time and used at runtime |
 | `USE_RATIONALE_JUDGE` | `1` | `0` disables Ollama and runs deterministic metrics only |
-| `ALLOW_MODEL_PULL` | `1` | `0` forbids runtime model download and fails if missing |
+| `ALLOW_MODEL_PULL` | `0` | `1` permits a runtime download; needs network, so not usable on Grand Challenge |
 
 Examples:
 
@@ -123,12 +151,15 @@ Examples:
 # Deterministic, CPU-only smoke test.
 USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1
 
-# Offline-style run after ./models has already been populated.
-GPU_DEVICE_ID=1 ALLOW_MODEL_PULL=0 ./do_test_run.sh task1 task2
+# Build with a different judge model baked in.
+JUDGE_MODEL=gemma3:4b ./do_build.sh
 
 # Build under a custom image tag.
 DOCKER_IMAGE_TAG=chimera-evaluator:dev ./do_build.sh
 ```
+
+> The build fails if `JUDGE_MODEL` cannot be resolved by `ollama pull`. Override
+> it with `JUDGE_MODEL=<tag> ./do_build.sh` rather than editing the Dockerfile.
 
 ## Scripts
 
@@ -139,7 +170,8 @@ DOCKER_IMAGE_TAG=chimera-evaluator:dev ./do_build.sh
 ```
 
 Builds `chimera-evaluator:latest` from [docker/Dockerfile](docker/Dockerfile)
-using this directory as the build context.
+using this directory as the build context, and pulls `JUDGE_MODEL` into the
+image. This step needs network access; the resulting runs do not.
 
 ### Local Test Run
 
@@ -151,12 +183,13 @@ GPU_DEVICE_ID=0 ./do_test_run.sh task1 task2
 
 For each requested task, the script mounts:
 
-- [test/outputs](test/outputs) as `/input:ro`
+- [test/input](test/input) as `/input:ro`
 - [ground_truth](ground_truth) as `/opt/ml/input/data/ground_truth:ro`
 - `results/<task>` as `/output`
-- [models](models) as `/models`
+- a throwaway Docker volume as `/tmp`
 
-It also runs as the host user so generated files are not owned by root.
+It runs with `--network none`, then fixes file ownership afterwards from inside
+the container so the results stay readable on the host.
 
 ### Package for Grand Challenge
 
@@ -178,33 +211,24 @@ The scripts are the preferred entry point, but this is the equivalent shape for
 a single task on GPU 1:
 
 ```bash
-mkdir -p results/task1 models
+mkdir -p results/task1
 
 docker run --rm \
   --gpus "device=1" \
   --platform=linux/amd64 \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/test/outputs:/input:ro" \
+  --network none \
+  -v "$PWD/test/input:/input:ro" \
   -v "$PWD/ground_truth:/opt/ml/input/data/ground_truth:ro" \
   -v "$PWD/results/task1:/output" \
-  -v "$PWD/models:/models" \
-  -v /etc/passwd:/etc/passwd:ro \
-  -v /etc/group:/etc/group:ro \
-  -e HOME=/tmp \
   -e TASK_ID=task1 \
   -e GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth/task1 \
-  -e TEST_OUTPUTS_DIR=/input/task1 \
-  -e SECTION_MAPPING_FILE=/opt/ml/input/data/ground_truth/section_variable_mapping.json \
-  -e EVAL_OUTPUT_DIR=/output \
-  -e JUDGE_MODEL=gemma4:e4b \
-  -e USE_RATIONALE_JUDGE=1 \
-  -e ALLOW_MODEL_PULL=1 \
   chimera-evaluator:latest
 ```
 
-For an offline check after the model exists in `/models`, add
-`-e ALLOW_MODEL_PULL=0`. To disable the judge entirely, set
-`-e USE_RATIONALE_JUDGE=0` and omit `--gpus`.
+All other paths (`INPUT_DIRECTORY`, `PREDICTIONS_FILE`, `PK_CASE_MAP_FILE`,
+`SECTION_MAPPING_FILE`, `EVAL_OUTPUT_DIR`) already have correct defaults baked
+into the image. To disable the judge entirely, add `-e USE_RATIONALE_JUDGE=0`
+and omit `--gpus`.
 
 ## Outputs
 
@@ -220,29 +244,27 @@ the container:
 
 ## Evaluation Logic
 
-Agent outputs are read from `test/input/predictions.json`. Each job's task is
-identified from its input sockets, and its `case_id` is recovered from
-`test/input/pk_hash_to_case_map.json`. The evaluator iterates over ground-truth
-cases; a ground-truth case with no matching prediction is reported as a missing
-candidate with `case_score = 0`.
+Agent outputs are read from the per-job files described in
+[How Input Handling Works](#how-input-handling-works). The evaluator scores every
+job belonging to `TASK_ID`, then reports any ground-truth case that had no job as
+a missing candidate with `case_score = 0`.
 
 ### Stage 1: Decision Gate (Task 1 / Task 2)
 
-The evaluator matches predictions to ground truth by `case_id`.
+Both gates are **exact match**. There is no partial credit.
 
 For Task 1, the `biopsy_decision` must be valid (`yes` or `no`) and match the
-pathologist response exactly. A mismatch receives `case_score = 0`.
+pathologist response exactly.
 
-For Task 2, `treatment_recommendation.primary` is scored across:
+For Task 2, `treatment_recommendation.primary` must exactly match one of:
 
 - `watchful_waiting`
 - `active_surveillance`
 - `continued_surveillance`
 - `active_treatment`
 
-Exact matches receive full decision credit. `active_surveillance` versus
-`continued_surveillance` receives partial credit (`decision_score = 0.5`). Other
-mismatches receive zero.
+Any mismatch ends the case with `case_score = 0`. Only cases that pass the gate
+proceed to Stage 2.
 
 ### Stage 2: Component Scores
 
@@ -303,36 +325,56 @@ truth carries only the outcome), so it scores clinical soundness and internal
 consistency of the agent's free text against the clinical inputs and the
 reference outcome.
 
-At the dataset level, Task 3 also reports Harrell's concordance index over the
-cohort, using predicted months as the risk ordering.
+At the dataset level, Task 3 reports two ranking metrics over the cohort, both
+using predicted months as the risk ordering (a shorter predicted time means
+higher risk):
+
+- **Harrell's concordance index** — overall ranking quality across all
+  comparable pairs.
+- **Time-dependent AUC** — Uno's IPCW cumulative/dynamic AUC at 12, 24, 36 and
+  60 months. At each horizon, cases are patients who recurred by then and
+  controls are those still recurrence-free; inverse-probability-of-censoring
+  weights correct for patients censored before the horizon. A horizon with no
+  case/control pair reports `null`, and `mean_time_dependent_auc` averages only
+  the horizons that are defined.
+
+> Both metrics need a reasonable cohort size. On a two-case test set they will
+> usually be `null`; that is expected, not a failure.
 
 ## Key Aggregate Metrics
 
+Task 1 / Task 2:
+
 | Metric | Meaning |
 | --- | --- |
-| `final_DAG_score` | Mean case score across all cases, including gate failures |
-| `decision_accuracy` | Mean decision score, including partial Task 2 credit |
-| `exact_decision_accuracy` | Exact decision-match accuracy |
+| `mean_case_score` | Mean case score across all cases, including gate failures |
+| `decision_accuracy` | Decision-match accuracy |
 | `decision_f1_yes` | Task 1 positive-class F1 for biopsy `yes` |
-| `decision_macro_f1` | Multiclass macro F1 for non-binary decision tasks |
+| `decision_weighted_f1` | Support-weighted multiclass F1 for Task 2 |
 | `confidence_weighted_kappa` | Quadratic weighted kappa over confidence labels |
 | `variable_weight_weighted_kappa` | Quadratic weighted kappa over variable weights |
 | `mean_tool_score` | Mean tool-efficiency precision |
 | `mean_section_grounding_score` | Mean section-grounding score |
 | `mean_rationale_score` | Mean LLM rationale score when enabled |
-| `decision_gate_pass_rate` | Fraction of cases with nonzero decision score |
+| `decision_gate_pass_rate` | Fraction of cases that passed the decision gate |
 | `mean_case_score_among_gate_passed` | Mean case score excluding decision-gate failures |
+
+Task 2 uses **weighted** F1 rather than macro F1 so that each class contributes
+in proportion to how often it actually occurs, which is the more honest summary
+on the imbalanced treatment-label distribution.
 
 Task 3 (biochemical recurrence) reports a different set:
 
 | Metric | Meaning |
 | --- | --- |
-| `final_DAG_score` | Mean case score across all Task 3 cases |
+| `mean_case_score` | Mean case score across all Task 3 cases |
 | `recurrence_event_accuracy` | Fraction of cases with correct `event` |
 | `mean_event_score` | Mean event-agreement score |
 | `mean_time_score` | Mean censoring-aware time score |
 | `event1_time_mae_months` | Mean absolute months error over observed recurrences |
-| `concordance_index` | Harrell's C-index over the cohort (None if no comparable pairs) |
+| `concordance_index` | Harrell's C-index over the cohort (`null` if no comparable pairs) |
+| `time_dependent_auc` | IPCW cumulative/dynamic AUC per horizon (`12m`, `24m`, `36m`, `60m`) |
+| `mean_time_dependent_auc` | Mean of the defined horizons |
 | `mean_rationale_score` | Mean Task 3 reasoning-judge score when enabled |
 
 ## Adding or Replacing Data
@@ -351,10 +393,19 @@ the evaluator accepts a flat list, a task-keyed list such as
 bare `{"months_to_recurrence": ..., "event": ...}` object.
 
 Agent outputs come from `test/input/predictions.json` (a Grand Challenge job
-dump). Each job's task is identified from its input sockets, and its case is
-recovered from `test/input/pk_hash_to_case_map.json`, which maps each job `pk`
-to `taskN/<case_id>`. Ground-truth cases with no matching prediction are
-reported as missing candidates.
+dump) plus one directory per job pk holding that job's output files:
+
+```text
+test/input/predictions.json
+test/input/pk_hash_to_case_map.json
+test/input/<job_pk>/<relative_path>.json
+```
+
+The `<relative_path>` values come from each output socket in `predictions.json`,
+so the filenames must match what that file declares. `pk_hash_to_case_map.json`
+maps each job `pk` to `taskN/<case_id>` and is used only to recover the
+ground-truth case id. Ground-truth cases with no matching job are reported as
+missing candidates.
 
 Keep [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json)
 updated when adding variables that should participate in section-grounding
@@ -372,8 +423,8 @@ GPU_DEVICE_ID=3 ./do_test_run.sh task1 task2 task3
 # Run deterministic metrics only (no GPU / no judge).
 USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1 task2 task3
 
-# Run offline after the model store has been populated.
-GPU_DEVICE_ID=3 ALLOW_MODEL_PULL=0 ./do_test_run.sh task1 task2 task3
+# Rebuild with a different judge model baked into the image.
+JUDGE_MODEL=gemma3:4b ./do_build.sh
 
 # Package image + ground truth tarball for Grand Challenge.
 ./do_save.sh

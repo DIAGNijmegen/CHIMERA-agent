@@ -2,21 +2,22 @@
 # ============================================================================
 # Single-container entrypoint
 #
-# 1. Start the embedded Ollama server in the background (using OLLAMA_MODELS
-#    which is mounted at /models — weights persist across runs).
+# 1. Start the embedded Ollama server in the background (using OLLAMA_MODELS,
+#    which points at the weights baked into the image at /opt/ollama-models).
 # 2. Wait for the API to be ready.
 # 3. If the rationale judge is enabled, ensure JUDGE_MODEL is present in the
 #    model store; pull it if missing and ALLOW_MODEL_PULL=1, otherwise fail
-#    with a clear message (this is what Grand-Challenge --network none runs
-#    will hit when the weights mount is empty).
+#    with a clear message (a pull is impossible under Grand Challenge's
+#    --network none, which is why the model is baked in at build time).
 # 4. Run the evaluator.
 # 5. Shut Ollama down cleanly and propagate the evaluator exit code.
 #
 # Runtime paths (Grand-Challenge layout):
 #   /input/                          read-only predictions.json + pk_hash_to_case_map.json
+#                                    plus <job_pk>/ output files
 #   /opt/ml/input/data/ground_truth/ read-only pathologist responses + section mapping
 #   /output/                         writable results
-#   /models/                         Ollama weight store (judge model)
+#   /opt/ollama-models/              judge weights baked into the image
 # ============================================================================
 set -euo pipefail
 
@@ -58,7 +59,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 if [[ "${NEED_OLLAMA}" == "1" ]]; then
-    mkdir -p "${OLLAMA_MODELS:-/models}"
+    mkdir -p "${OLLAMA_MODELS:-/opt/ollama-models}"
 
     echo "[entrypoint] Starting Ollama server"
     echo "             OLLAMA_HOST=${OLLAMA_HOST}"
@@ -99,8 +100,9 @@ if [[ "${NEED_OLLAMA}" == "1" ]]; then
         else
             echo "[entrypoint] ERROR: judge model '${JUDGE_MODEL}' is missing from ${OLLAMA_MODELS}" >&2
             echo "             and ALLOW_MODEL_PULL=0 (offline mode)." >&2
-            echo "             Mount a pre-populated Ollama model store at /models" >&2
-            echo "             or rerun with -e ALLOW_MODEL_PULL=1." >&2
+            echo "             The model is normally baked in at build time; rebuild with" >&2
+            echo "             --build-arg JUDGE_MODEL='${JUDGE_MODEL}', or rerun with" >&2
+            echo "             -e ALLOW_MODEL_PULL=1 if the container has network access." >&2
             exit 1
         fi
     fi

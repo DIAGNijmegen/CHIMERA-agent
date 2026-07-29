@@ -13,7 +13,10 @@
 #   /output/                         (writable)   metrics.json, per_case_results.csv,
 #                                                 aggregate_metrics.json,
 #                                                 evaluation_results_summary.json
-#   /models/                         (read/write) Ollama model store (judge LLM weights)
+#
+# The judge LLM weights are baked into the image at /opt/ollama-models, so the
+# container needs no network and no weights mount. Grand Challenge runs
+# evaluation containers with `--network none`, which makes this mandatory.
 #
 # GPU access requires the NVIDIA Container Toolkit on the host
 # (`docker run --gpus all ...`).  CPU-only runs work too if
@@ -62,22 +65,51 @@ COPY ground_truth/section_variable_mapping.json \
      /opt/app/defaults/section_variable_mapping.json
 
 # ── Runtime mount points (Grand-Challenge layout) ───────────────────────────
-RUN mkdir -p /input /opt/ml/input/data/ground_truth /output /models \
- && chmod 0777 /output /models
+RUN mkdir -p /input /opt/ml/input/data/ground_truth /output \
+ && chmod 0777 /output
+
+# ── Judge model (baked into the image) ──────────────────────────────────────
+# Pull the judge weights at build time into a directory that is NOT a runtime
+# mount point, so no bind mount can shadow them. Override the tag with:
+#   docker build --build-arg JUDGE_MODEL=<tag> ...
+# The build fails loudly if the tag cannot be resolved.
+ARG JUDGE_MODEL=gemma4:e4b
+ENV OLLAMA_HOST=127.0.0.1:11434 \
+    OLLAMA_MODELS=/opt/ollama-models
+RUN set -eu; \
+    mkdir -p "${OLLAMA_MODELS}"; \
+    ollama serve >/tmp/ollama-build.log 2>&1 & \
+    OLLAMA_PID=$!; \
+    for _ in $(seq 1 60); do \
+        if curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then break; fi; \
+        sleep 1; \
+    done; \
+    if ! curl -fsS "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then \
+        echo "ERROR: Ollama did not start during build" >&2; \
+        cat /tmp/ollama-build.log >&2; \
+        exit 1; \
+    fi; \
+    echo "Baking judge model ${JUDGE_MODEL} into the image..."; \
+    ollama pull "${JUDGE_MODEL}"; \
+    kill "${OLLAMA_PID}" 2>/dev/null || true; \
+    wait "${OLLAMA_PID}" 2>/dev/null || true; \
+    rm -f /tmp/ollama-build.log; \
+    chmod -R a+rX "${OLLAMA_MODELS}"
 
 # ── Default environment ─────────────────────────────────────────────────────
 # Ollama --------------------------------------------------------------------
-ENV OLLAMA_HOST=127.0.0.1:11434 \
-    OLLAMA_MODELS=/models \
-    OLLAMA_KEEP_ALIVE=24h \
+ENV OLLAMA_KEEP_ALIVE=24h \
     OLLAMA_BASE_URL=http://127.0.0.1:11434
 # Judge --------------------------------------------------------------------
-ENV JUDGE_MODEL=gemma4:e4b \
+# ALLOW_MODEL_PULL=0 by default: the model is already in the image, and Grand
+# Challenge runs offline. Set it to 1 only when deliberately using another tag.
+ENV JUDGE_MODEL=${JUDGE_MODEL} \
     USE_RATIONALE_JUDGE=1 \
-    ALLOW_MODEL_PULL=1
+    ALLOW_MODEL_PULL=0
 # Evaluator I/O ------------------------------------------------------------
 ENV TASK_ID=task1 \
     GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth/task1 \
+    INPUT_DIRECTORY=/input \
     PREDICTIONS_FILE=/input/predictions.json \
     PK_CASE_MAP_FILE=/input/pk_hash_to_case_map.json \
     SECTION_MAPPING_FILE=/opt/ml/input/data/ground_truth/section_variable_mapping.json \
