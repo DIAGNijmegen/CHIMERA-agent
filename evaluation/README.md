@@ -14,6 +14,41 @@ Everything ships in **one Docker image**: the Python scoring pipeline, an
 embedded Ollama server, and the judge LLM weights themselves. The container
 needs no network at runtime, which is what Grand Challenge requires.
 
+## Leaderboard scoring
+
+All leaderboard metrics range from 0 to 1, with higher scores indicating better performance.
+
+### Task 1: Biopsy decision
+
+The Task 1 ranking score is the average of:
+
+* **Mean case score:** A holistic score averaged across all patients. Per case - An incorrect biopsy decision receives a case score of zero. For a correct decision, the score evaluates agreement with the pathologist on confidence, clinical-variable importance and decisive factors, together with efficient information retrieval, evidence grounding and the quality of the explanation.
+* **Biopsy F1 score:** The F1 score for the positive class—patients for whom biopsy is recommended.
+
+[
+\text{Task 1 score}=
+\frac{\text{Mean case score}+\text{Biopsy F1}}{2}
+]
+
+### Task 2: Treatment recommendation
+
+The Task 2 ranking score is the average of:
+
+* **Mean case score:** A holistic score averaged across all patients. Per case- An incorrect primary treatment recommendation receives a case score of zero. For a correct recommendation, the score evaluates confidence, clinical-variable importance, identification of decisive factors, information-retrieval efficiency, evidence grounding and explanation quality.
+* **Weighted F1 score:** F1 across the four treatment categories, weighted by the number of patients in each category. This accounts for imbalance between treatment classes.
+
+[
+\text{Task 2 score}=
+\frac{\text{Mean case score}+\text{Weighted F1}}{2}
+]
+
+### Task 3: Time to biochemical recurrence
+
+The Task 3 leaderboard is ranked using Harrell's Concordance Index (C-index).
+
+The C-index measures how well a model ranks patients according to their risk of biochemical recurrence. Rather than requiring the exact recurrence time to be predicted, it evaluates whether patients predicted to recur earlier do, in fact, experience recurrence before patients predicted to recur later. The metric naturally accounts for censored patients by considering only comparable patient pairs.
+The evaluator also reports a Task 3 mean case score based on event-status agreement, time dependent AUC and explanation quality (not compared to urologist derived ground truth). However, this per-case score is provided for later analysis and is not part of the Task 3 leaderboard ranking.
+
 ## How Input Handling Works
 
 Input handling is a deliberate copy of the GC debug kit.

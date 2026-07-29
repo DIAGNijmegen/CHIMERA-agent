@@ -1695,14 +1695,37 @@ CSV_COLUMNS = [
     "reason",
 ]
 
+# Task 3 has no decision gate, confidence, variable weights, reveal sequence or
+# section grounding, so none of those columns apply. Emitting them would only
+# produce a wall of empty cells and imply scores that were never computed.
+RECURRENCE_CSV_COLUMNS = [
+    "case_id",
+    "task",
+    "gate",
+    "case_score",
+    "gt_event",
+    "pred_event",
+    "gt_months",
+    "pred_months",
+    "event_score",
+    "time_score",
+    "rationale_score",
+    "reason",
+]
+
 
 def write_csv(rows: list[dict], path: Path) -> None:
+    columns = (
+        RECURRENCE_CSV_COLUMNS
+        if rows and all(r.get("task") == "recurrence" for r in rows)
+        else CSV_COLUMNS
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        w = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         w.writeheader()
         for r in rows:
-            w.writerow({k: r.get(k) for k in CSV_COLUMNS})
+            w.writerow({k: r.get(k) for k in columns})
 
 
 def write_json(obj: Any, path: Path) -> None:
@@ -1771,12 +1794,17 @@ def run() -> None:
         }}
         public_rows.append(pr)
 
+    is_recurrence_run = bool(rows) and all(r.get("task") == "recurrence" for r in rows)
+
     summary = {
         "task_id": TASK_ID,
         "ground_truth_dir": str(GROUND_TRUTH_DIR),
         "predictions_file": str(PREDICTIONS_FILE),
         "judge_model": JUDGE_MODEL if USE_RATIONALE_JUDGE else None,
-        "tool_metric": "DeepEval ToolCorrectnessMetric" if ctx["tool_metric"] is not None else "fallback",
+        # Tool use is a Task 1 / Task 2 concept only.
+        "tool_metric": None if is_recurrence_run else (
+            "DeepEval ToolCorrectnessMetric" if ctx["tool_metric"] is not None else "fallback"
+        ),
         "rationale_judge_enabled": ctx["rationale_judge"] is not None,
         "n_target": len(targets),
         "n_scored": len(scored_case_ids),
