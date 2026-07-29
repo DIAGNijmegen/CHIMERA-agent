@@ -16,8 +16,7 @@ needs no network at runtime, which is what Grand Challenge requires.
 
 ## How Input Handling Works
 
-Input handling is a deliberate copy of the reference evaluation method in
-[external/example_evaluation_method/evaluate.py](external/example_evaluation_method/evaluate.py).
+Input handling is a deliberate copy of the GC debug kit.
 Only the *scoring* and the *emitted metrics* differ.
 
 ```text
@@ -52,10 +51,7 @@ Jobs whose interface belongs to a different task than `TASK_ID` are skipped.
 Ground-truth cases with no matching job are reported as missing candidates with
 `case_score = 0` rather than crashing.
 
-> **Path note.** Grand Challenge nests job outputs under
-> `<job_pk>/output/<relative_path>`. This repository keeps them flat at
-> `<job_pk>/<relative_path>`. `get_file_location` accepts whichever exists, so
-> the same image works locally and on the platform.
+
 
 ## Repository Layout
 
