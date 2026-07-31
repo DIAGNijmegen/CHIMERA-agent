@@ -7,12 +7,16 @@
 #
 # Runtime contract (Grand-Challenge layout — see external/example_evaluation_method):
 #   /input/                          (read-only)  predictions.json
-#   /opt/ml/input/data/ground_truth/ (read-only)  taskN/case_id/pathologist_response.json
+#   /opt/ml/input/data/ground_truth/ (read-only)  taskN/case_id/<decision>.json
+#                                                 taskN/case_id/<decision>-reasoning.json
 #                                                 taskN/case_id/prostate-time-to-recurrence-or-last-follow-up.json
 #                                                 section_variable_mapping.json
 #   /output/                         (writable)   metrics.json, per_case_results.csv,
 #                                                 aggregate_metrics.json,
 #                                                 evaluation_results_summary.json
+#
+# The container runs as the unprivileged user `user`. Grand Challenge rejects
+# images whose final USER is root.
 #
 # The judge LLM weights are baked into the image at /opt/ollama-models, so the
 # container needs no network and no weights mount. Grand Challenge runs
@@ -43,6 +47,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Unprivileged runtime user ───────────────────────────────────────────────
+# Created early so the application COPYs below can set ownership directly.
+# The switch to USER happens at the very end, after every step that needs root.
+RUN groupadd -r user && useradd -m --no-log-init -r -g user user
+
 # ── Python dependencies ─────────────────────────────────────────────────────
 # Use a venv to avoid conflicts with Debian-managed pip/Python packages.
 COPY docker/requirements.txt /tmp/requirements.txt
@@ -55,13 +64,13 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # ── Application code ────────────────────────────────────────────────────────
 WORKDIR /opt/app
-COPY evaluate.py            /opt/app/evaluate.py
-COPY docker/entrypoint.sh   /opt/app/entrypoint.sh
+COPY --chown=user:user evaluate.py            /opt/app/evaluate.py
+COPY --chown=user:user docker/entrypoint.sh   /opt/app/entrypoint.sh
 RUN chmod +x /opt/app/entrypoint.sh
 
 # Default copy of the section→variable mapping so the image can score section
 # grounding even when the mapping is not mounted separately.
-COPY ground_truth/section_variable_mapping.json \
+COPY --chown=user:user ground_truth/section_variable_mapping.json \
      /opt/app/defaults/section_variable_mapping.json
 
 # ── Runtime mount points (Grand-Challenge layout) ───────────────────────────
@@ -94,7 +103,8 @@ RUN set -eu; \
     kill "${OLLAMA_PID}" 2>/dev/null || true; \
     wait "${OLLAMA_PID}" 2>/dev/null || true; \
     rm -f /tmp/ollama-build.log; \
-    chmod -R a+rX "${OLLAMA_MODELS}"
+    chmod -R a+rX "${OLLAMA_MODELS}"; \
+    chown user:user "${OLLAMA_MODELS}"
 
 # ── Default environment ─────────────────────────────────────────────────────
 # Ollama --------------------------------------------------------------------
@@ -118,6 +128,15 @@ ENV OPENAI_API_KEY=dummy-key-not-used \
     DEEPEVAL_TELEMETRY_OPT_OUT=YES \
     PYTHONUNBUFFERED=1 \
     HOME=/tmp
+
+# ── Drop root ───────────────────────────────────────────────────────────────
+# Everything above needs root (apt, venv, baking the judge weights); nothing
+# below does. The working directory moves to /tmp because DeepEval writes its
+# .deepeval cache into the current directory, and on Grand Challenge /tmp and
+# /output are the only writable paths. HOME is already /tmp, which is where
+# Ollama keeps its runtime key.
+WORKDIR /tmp
+USER user
 
 ENTRYPOINT ["/opt/app/entrypoint.sh"]
 CMD ["python", "/opt/app/evaluate.py"]
