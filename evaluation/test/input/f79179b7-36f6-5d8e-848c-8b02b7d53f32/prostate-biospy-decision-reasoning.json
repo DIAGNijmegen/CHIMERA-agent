@@ -14,14 +14,6 @@
     "fh": "not_used"
   },
   "reveal_sequence": [
-    {
-      "page": "decision",
-      "order": 1,
-      "key": "section_s3-mri",
-      "label": "Radiology / MRI report",
-      "value": "section",
-      "via": "tool_call",
-      "ts": "2026-07-15T23:55:16.732Z"
-    }
+    "radiology_report"
   ]
 }

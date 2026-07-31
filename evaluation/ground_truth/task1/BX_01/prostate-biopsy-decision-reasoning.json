@@ -1,0 +1,21 @@
+{
+  "confidence": "clear",
+  "variable_weights": {
+    "pirads": "decisive",
+    "psad": "important",
+    "psa": "noted",
+    "dre": "important",
+    "cspca": "important",
+    "age": "noted",
+    "fh": "not_used",
+    "vol": "noted",
+    "bx": "noted",
+    "comorbidity": "not_used"
+  },
+  "reveal_sequence": [
+    "radiology_report",
+    "laboratory_results",
+    "previous_notes"
+  ],
+  "free_text": "PI-RADS 4 alone mandates targeted + perilesional biopsy regardless of PSA density or family history. PSA density 0.25 and suspicious DRE further support."
+}

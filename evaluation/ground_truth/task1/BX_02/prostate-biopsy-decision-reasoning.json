@@ -1,0 +1,22 @@
+{
+  "confidence": "clear",
+  "variable_weights": {
+    "pirads": "decisive",
+    "psad": "important",
+    "psa": "noted",
+    "dre": "important",
+    "cspca": "important",
+    "age": "noted",
+    "fh": "important",
+    "vol": "noted",
+    "bx": "not_used",
+    "comorbidity": "not_used"
+  },
+  "reveal_sequence": [
+    "radiology_report",
+    "laboratory_results",
+    "previous_notes",
+    "family_history"
+  ],
+  "free_text": "PI-RADS 5 with high PSA density and first-degree family history. Unambiguous biopsy indication."
+}

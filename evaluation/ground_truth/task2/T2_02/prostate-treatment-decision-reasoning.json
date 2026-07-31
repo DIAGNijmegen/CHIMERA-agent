@@ -1,0 +1,24 @@
+{
+  "confidence": "clear",
+  "variable_weights": {
+    "age": "important",
+    "bx_isup": "decisive",
+    "pirads": "important",
+    "ct": "important",
+    "psad": "important",
+    "bx_gl_sec": "important",
+    "comorbidity": "noted",
+    "fh": "not_used",
+    "cspca": "important",
+    "psa": "decisive",
+    "bx_gl_prim": "important"
+  },
+  "reveal_sequence": [
+    "pathology_report",
+    "psa_trend",
+    "radiology_report",
+    "laboratory_results",
+    "previous_notes"
+  ],
+  "free_text": "Very high-risk profile (ISUP 4, PI-RADS 5, PSA 187) warrants immediate active treatment with combined-modality intent."
+}

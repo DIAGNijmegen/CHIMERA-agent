@@ -1,0 +1,25 @@
+{
+  "confidence": "clear",
+  "variable_weights": {
+    "age": "noted",
+    "bx_isup": "decisive",
+    "pirads": "important",
+    "ct": "noted",
+    "psad": "important",
+    "bx_gl_sec": "important",
+    "comorbidity": "noted",
+    "fh": "important",
+    "cspca": "important",
+    "psa": "noted",
+    "bx_gl_prim": "important"
+  },
+  "reveal_sequence": [
+    "pathology_report",
+    "radiology_report",
+    "laboratory_results",
+    "psa_trend",
+    "family_history",
+    "previous_notes"
+  ],
+  "free_text": "Low-grade disease (ISUP 1) with stable low-volume features and PI-RADS 2 supports active surveillance despite positive family history."
+}

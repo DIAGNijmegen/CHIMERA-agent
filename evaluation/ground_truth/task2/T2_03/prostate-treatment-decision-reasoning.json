@@ -1,0 +1,25 @@
+{
+  "confidence": "borderline",
+  "variable_weights": {
+    "age": "important",
+    "bx_isup": "important",
+    "pirads": "decisive",
+    "ct": "important",
+    "psad": "important",
+    "bx_gl_sec": "important",
+    "comorbidity": "noted",
+    "fh": "important",
+    "cspca": "important",
+    "psa": "important",
+    "bx_gl_prim": "important"
+  },
+  "reveal_sequence": [
+    "pathology_report",
+    "radiology_report",
+    "laboratory_results",
+    "psa_trend",
+    "family_history",
+    "previous_notes"
+  ],
+  "free_text": "ISUP 3 disease with PI-RADS 5 and high PSA density supports active treatment rather than surveillance."
+}

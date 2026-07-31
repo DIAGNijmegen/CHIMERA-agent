@@ -14,10 +14,13 @@ and every agent artefact is read from a real file whose location is built from
 the job pk plus the output socket's relative_path. Only the scoring and the
 emitted metrics differ from the reference method.
 
-The job dump carries no case_id, so pk_hash_to_case_map.json is used for that
-and only that: recovering the ground-truth case id for a pk. Ground truth is
-read per case from ground_truth/<task_id>/<case_id>/. Ground-truth cases with
-no matching job are reported as missing candidates rather than crashing.
+Evaluation is fully pk-agnostic. A job's task comes from its interface key (the
+sorted tuple of its input socket slugs) and its case id comes from the
+"case_id" field of its structured-prompt input, so no pk -> case mapping file is
+read. Ground truth is loaded per case from ground_truth/<task_id>/<case_id>/,
+which holds the same split decision/reasoning files the agent itself submits.
+Ground-truth cases with no matching job are reported as missing candidates
+rather than crashing.
 
 Scoring:
 
@@ -56,9 +59,9 @@ Grand-Challenge container contract (see external/example_evaluation_method):
     /input/                        (read-only)  predictions.json (job dump)
                                                 → <job_pk>/<relative_path>
                                                   (or <job_pk>/output/<relative_path>)
-                                                → pk_hash_to_case_map.json
     /opt/ml/input/data/ground_truth/ (read-only) ground-truth tarball
-                                                → $TASK_ID/<case_id>/pathologist_response.json
+                                                → $TASK_ID/<case_id>/<decision>.json
+                                                → $TASK_ID/<case_id>/<reasoning>.json
                                                 → section_variable_mapping.json
     /output/                       (writable)   metrics.json + the reports above
 
@@ -76,7 +79,6 @@ Environment variable overrides:
     GROUND_TRUTH_DIR   ground-truth case directory (default: ground_truth/$TASK_ID)
     INPUT_DIRECTORY    job dump + job output dirs  (default: test/input)
     PREDICTIONS_FILE   agent predictions dump      (default: $INPUT_DIRECTORY/predictions.json)
-    PK_CASE_MAP_FILE   pk -> case_id mapping       (default: $INPUT_DIRECTORY/pk_hash_to_case_map.json)
     EVAL_OUTPUT_DIR    output directory            (default: results/)
     OLLAMA_BASE_URL    Ollama API base URL         (default: http://ollama:11434)
     JUDGE_MODEL        Ollama model name           (default: gemma4:e4b)
@@ -128,17 +130,6 @@ PREDICTIONS_FILE = Path(os.getenv(
     "PREDICTIONS_FILE",
     str(INPUT_DIRECTORY / "predictions.json"),
 ))
-PK_CASE_MAP_FILE = Path(os.getenv(
-    "PK_CASE_MAP_FILE",
-    str(INPUT_DIRECTORY / "pk_hash_to_case_map.json"),
-))
-# Task 3 ground truth is a bare recurrence object under a different filename.
-_DEFAULT_GT_FILENAME = (
-    "prostate-time-to-recurrence-or-last-follow-up.json"
-    if TASK_ID == "task3"
-    else "pathologist_response.json"
-)
-GROUND_TRUTH_FILENAME = os.getenv("GROUND_TRUTH_FILENAME", _DEFAULT_GT_FILENAME)
 OUTPUT_DIR = Path(os.getenv(
     "EVAL_OUTPUT_DIR",
     str(ROOT / "results"),
@@ -186,6 +177,25 @@ WEIGHT_ALIAS = {
 
 IMPORTANT_OR_DECISIVE = {"important", "decisive"}
 
+# Label used in the dataset-level decision metrics when a case produced no
+# usable prediction (job absent, or output that failed schema validation). It
+# can never equal a ground-truth label, so such a case always counts as an
+# error instead of silently dropping out of the F1.
+MISSING_DECISION_LABEL = "__missing__"
+
+# Reveal-sequence vocabulary. Ground truth and agent submissions name the
+# sections they consulted with these six flat names, while
+# section_variable_mapping.json still keys its primary_sections by the raw form
+# section id, so that side is translated before anything is compared.
+SECTION_KEY_TO_REVEAL_NAME = {
+    "section_s3-prev": "previous_notes",
+    "section_s3-labs": "laboratory_results",
+    "section_s3-psa": "psa_trend",
+    "section_s3-mri": "radiology_report",
+    "section_s3-path": "pathology_report",
+    "section_s3-fh": "family_history",
+}
+
 # Interface keys: the sorted tuple of a job's input socket slugs, exactly as the
 # reference evaluation method identifies an interface. Used to pick the handler
 # and to skip jobs belonging to a different task than TASK_ID.
@@ -228,6 +238,30 @@ TASK3_REASONING_SLUGS = (
 )
 TASK3_CLIN_SLUGS = ("prostate-time-to-recurrence-or-last-follow-up-clin",)
 
+# Input socket slugs carrying the inline clinical context for each task. The
+# ground truth no longer repeats the clinical data, so the rationale judge
+# reads it from the job itself.
+STRUCTURED_PROMPT_SLUGS = ("structured-prompt",)
+TASK1_CLIN_SLUGS = ("prostate-biopsy-decision-clinical-data",)
+TASK2_CLIN_SLUGS = ("prostate-treatment-decision-clinical-data",)
+
+# Ground-truth filenames per task. Task 1 and Task 2 ground truth mirrors the
+# agent's own output sockets: a bare decision value plus a reasoning object.
+# Task 3 ground truth stays a single {months_to_recurrence, event} object.
+GT_FILENAMES = {
+    "task1": {
+        "decision": "prostate-biopsy-decision.json",
+        "reasoning": "prostate-biopsy-decision-reasoning.json",
+    },
+    "task2": {
+        "decision": "prostate-treatment-decision.json",
+        "reasoning": "prostate-treatment-decision-reasoning.json",
+    },
+    "task3": {
+        "outcome": "prostate-time-to-recurrence-or-last-follow-up.json",
+    },
+}
+
 
 # --------------------------------------------------------------------------- #
 # JSON / record helpers
@@ -238,52 +272,48 @@ def load_json(path: Path) -> Any:
         return json.load(f)
 
 
-def normalize_task_records(data: Any, task_name: str = "biopsy_decision") -> list[dict]:
-    """Accept either {task_name: [...]} or a flat [...] list and return a list."""
-    if isinstance(data, list):
-        return [r for r in data if isinstance(r, dict)]
-    if isinstance(data, dict):
-        if task_name in data and isinstance(data[task_name], list):
-            return [r for r in data[task_name] if isinstance(r, dict)]
-        for value in data.values():
-            if (
-                isinstance(value, list)
-                and all(isinstance(r, dict) for r in value)
-                and all("case_id" in r or "patient" in r for r in value)
-            ):
-                return value
-        # Fallback: maybe the dict IS the single record.
-        if "biopsy_decision" in data and isinstance(data["biopsy_decision"], str):
-            return [data]
-    return []
+def load_ground_truth_records(root: Path, task_id: str) -> list[dict]:
+    """Load one flattened ground-truth record per case from root/<case_id>/.
 
+    Task 1 and Task 2 ground truth is split over the same two files the agent
+    submits: a bare decision value and a reasoning object holding confidence,
+    variable_weights, reveal_sequence and free_text. Task 3 ground truth is a
+    single {months_to_recurrence, event} object. Records are flattened into the
+    same shape the per-interface handlers build for predictions, so the scorers
+    see identical keys on both sides.
 
-def load_ground_truth_records(root: Path, filename: str) -> list[dict]:
-    """Load one ground-truth record per case from root/<case_id>/<filename>.
-
-    The case directory name is authoritative for case_id: Task 3 ground-truth
-    files carry no case_id of their own, and the pk -> case map keys off the
-    directory name too.
+    The case directory name is authoritative for case_id: the ground-truth
+    files carry no case id of their own.
     """
     if not root.exists():
         sys.exit(f"Missing ground-truth directory: {root}")
     if not root.is_dir():
         sys.exit(f"ground-truth path is not a directory: {root}")
+    names = GT_FILENAMES.get(task_id)
+    if names is None:
+        sys.exit(f"Unknown TASK_ID {task_id!r}; expected one of {sorted(GT_FILENAMES)}")
 
     records: list[dict] = []
     for case_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        path = case_dir / filename
-        if not path.exists():
-            print(f"[warning] no ground-truth file at {path}")
+        missing = [n for n in names.values() if not (case_dir / n).exists()]
+        if missing:
+            print(f"[warning] {case_dir.name}: missing ground-truth file(s) {missing}; skipping case")
             continue
-        data = load_json(path)
-        recs = normalize_task_records(data)
-        if not recs and isinstance(data, dict):
-            # Task 3: a bare {months_to_recurrence, event} object.
-            recs = [data]
-        for r in recs:
-            r["case_id"] = case_dir.name
-        records.extend(recs)
+
+        if task_id == "task3":
+            outcome = load_json(case_dir / names["outcome"])
+            record = dict(outcome) if isinstance(outcome, dict) else {}
+        else:
+            reasoning = load_json(case_dir / names["reasoning"])
+            record = dict(reasoning) if isinstance(reasoning, dict) else {}
+            decision = load_json(case_dir / names["decision"])
+            if task_id == "task1":
+                record["biopsy_decision"] = decision
+            else:
+                record["treatment_recommendation"] = {"primary": decision}
+
+        record["case_id"] = case_dir.name
+        records.append(record)
     return records
 
 
@@ -362,23 +392,6 @@ def load_json_file(*, location: Path) -> Any:
         return json.loads(f.read())
 
 
-def load_pk_to_case() -> dict[str, str]:
-    """job pk -> ground-truth case_id.
-
-    This mapping exists purely to recover the ground-truth case id; job output
-    files are located from the pk and the socket relative_path, never from here.
-    """
-    if not PK_CASE_MAP_FILE.exists():
-        print(
-            f"[warning] pk->case map not found at {PK_CASE_MAP_FILE}; "
-            f"predictions cannot be matched to ground truth"
-        )
-        return {}
-    raw = load_json(PK_CASE_MAP_FILE)
-    mapping = raw.get("pk_to_case", raw) if isinstance(raw, dict) else {}
-    return {str(pk): Path(str(case_path)).name for pk, case_path in mapping.items()}
-
-
 # --------------------------------------------------------------------------- #
 # Per-interface handlers
 # --------------------------------------------------------------------------- #
@@ -396,7 +409,7 @@ def process(job: dict, ctx: dict) -> dict | None:
 
 def process_interf0(job: dict, ctx: dict) -> dict | None:
     """Task 1 — prostate biopsy decision + reasoning."""
-    case_id = _case_id_for_job(job, ctx)
+    case_id = _case_id_for_job(job)
     if not case_id:
         return None
 
@@ -416,6 +429,8 @@ def process_interf0(job: dict, ctx: dict) -> dict | None:
     pred = dict(result_reasoning) if isinstance(result_reasoning, dict) else {}
     pred["biopsy_decision"] = result_decision
     pred["case_id"] = case_id
+    clin = _socket_value(job.get("inputs"), TASK1_CLIN_SLUGS)
+    pred["clinical_data"] = clin if isinstance(clin, dict) else {}
 
     # Fourthly, score against the ground truth for this case
     return _score_job(job, ctx, pred)
@@ -423,7 +438,7 @@ def process_interf0(job: dict, ctx: dict) -> dict | None:
 
 def process_interf1(job: dict, ctx: dict) -> dict | None:
     """Task 2 — prostate treatment decision + reasoning."""
-    case_id = _case_id_for_job(job, ctx)
+    case_id = _case_id_for_job(job)
     if not case_id:
         return None
 
@@ -440,13 +455,15 @@ def process_interf1(job: dict, ctx: dict) -> dict | None:
     pred = dict(result_reasoning) if isinstance(result_reasoning, dict) else {}
     pred["treatment_recommendation"] = {"primary": result_decision}
     pred["case_id"] = case_id
+    clin = _socket_value(job.get("inputs"), TASK2_CLIN_SLUGS)
+    pred["clinical_data"] = clin if isinstance(clin, dict) else {}
 
     return _score_job(job, ctx, pred)
 
 
 def process_interf2(job: dict, ctx: dict) -> dict | None:
     """Task 3 — time to biochemical recurrence + reasoning."""
-    case_id = _case_id_for_job(job, ctx)
+    case_id = _case_id_for_job(job)
     if not case_id:
         return None
 
@@ -475,11 +492,22 @@ def process_interf2(job: dict, ctx: dict) -> dict | None:
     return _score_job(job, ctx, pred)
 
 
-def _case_id_for_job(job: dict, ctx: dict) -> str | None:
-    case_id = ctx["pk_to_case"].get(str(job.get("pk", "")))
+def _case_id_for_job(job: dict) -> str | None:
+    """Recover the ground-truth case id from the job's structured-prompt input.
+
+    Grand Challenge inlines JSON input values in predictions.json, so this needs
+    no file lookup and no pk -> case mapping: the job is identified entirely by
+    its own interface and payload.
+    """
+    prompt = _socket_value(job.get("inputs"), STRUCTURED_PROMPT_SLUGS)
+    case_id = prompt.get("case_id") if isinstance(prompt, dict) else None
     if not case_id:
-        print(f"[warning] pk {job.get('pk')} not in pk->case map; skipping")
-    return case_id
+        print(
+            f"[warning] job {job.get('pk')} has no case_id in its "
+            f"structured-prompt input; skipping"
+        )
+        return None
+    return str(case_id)
 
 
 def _score_job(job: dict, ctx: dict, pred: dict) -> dict | None:
@@ -861,6 +889,11 @@ def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
       - At least one of its primary_sections appears in the agent's
         reveal_sequence.
 
+    A variable whose primary sections are all outside the reveal vocabulary
+    (e.g. comorbidities, which no submission can declare as revealed) is
+    ungradable: it is excluded from the score entirely rather than counted as
+    ungrounded, which would be an unavoidable penalty.
+
     Score = n_grounded / (n_grounded + n_ungrounded)
 
     Returns (None, details) when no variable is actively weighted (no
@@ -869,6 +902,7 @@ def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
     mapping = _get_section_var_mapping()
     if not mapping:
         return None, {"grounded_variables": [], "ungrounded_variables": [],
+                      "ungradable_variables": [],
                       "total_weighted": 0, "revealed_sections": []}
 
     var_to_sections = mapping.get("variable_to_sections", {})
@@ -881,6 +915,7 @@ def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
 
     grounded: list[str] = []
     ungrounded: list[str] = []
+    ungradable: list[str] = []
 
     for var, weight_val in weights.items():
         w = _norm_weight(weight_val)
@@ -900,8 +935,17 @@ def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
             grounded.append(var)
             continue
 
+        primary_names = [
+            SECTION_KEY_TO_REVEAL_NAME[s]
+            for s in primary_sections
+            if s in SECTION_KEY_TO_REVEAL_NAME
+        ]
+        if not primary_names:
+            ungradable.append(var)
+            continue
+
         # Grounded if at least one primary section was revealed.
-        if any(s in revealed for s in primary_sections):
+        if any(s in revealed for s in primary_names):
             grounded.append(var)
         else:
             ungrounded.append(var)
@@ -911,6 +955,7 @@ def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
         return None, {
             "grounded_variables": [],
             "ungrounded_variables": [],
+            "ungradable_variables": sorted(ungradable),
             "total_weighted": 0,
             "revealed_sections": sorted(revealed),
         }
@@ -918,6 +963,7 @@ def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
     return len(grounded) / total, {
         "grounded_variables": sorted(grounded),
         "ungrounded_variables": sorted(ungrounded),
+        "ungradable_variables": sorted(ungradable),
         "total_weighted": total,
         "revealed_sections": sorted(revealed),
     }
@@ -928,24 +974,25 @@ def section_grounding_score(pred: dict) -> tuple[float | None, dict]:
 # --------------------------------------------------------------------------- #
 
 def _reveal_keys(record: dict) -> list[str]:
-    """Return section keys in reveal order, deduplicated (first occurrence wins)."""
+    """Return revealed section names in reveal order, deduplicated.
+
+    ``reveal_sequence`` is a flat, already-ordered list of section names, e.g.
+    ["radiology_report", "laboratory_results"]. Names outside the recognised
+    vocabulary are kept verbatim, so inventing a section still counts as an
+    extra (penalised) reveal.
+    """
     seq = record.get("reveal_sequence") or []
     if not isinstance(seq, list):
         return []
-    seq = sorted(seq, key=lambda x: x.get("order", 10**9) if isinstance(x, dict) else 10**9)
     seen: set[str] = set()
     keys: list[str] = []
     for item in seq:
-        if not isinstance(item, dict):
+        if not isinstance(item, str) or not item:
             continue
-        k = item.get("key")
-        if not k:
+        if item in seen:
             continue
-        k = str(k)
-        if k in seen:
-            continue
-        keys.append(k)
-        seen.add(k)
+        keys.append(item)
+        seen.add(item)
     return keys
 
 
@@ -1145,9 +1192,7 @@ def build_rationale_judge():
         "invent unavailable information; (5) expresses uncertainty consistent "
         "with the stated confidence. Score LOW if it contradicts the decision, "
         "misses major decisive factors, hallucinates clinical facts, or gives "
-        "generic case-agnostic reasoning. Repeat-test plans should also be "
-        "judged for clinical reasonableness when present, but only as a minor "
-        "modifier."
+        "generic case-agnostic reasoning."
     )
 
     geval = GEval(
@@ -1241,26 +1286,23 @@ def build_rationale_judge():
         gt_decision = _norm_treatment_decision(gt) if task == "treatment" else _norm_decision(gt.get("biopsy_decision"))
         pred_decision = _norm_treatment_decision(pred) if task == "treatment" else _norm_decision(pred.get("biopsy_decision"))
 
+        # The clinical context comes from the job's own inline input socket:
+        # the ground truth now carries only the decision and reasoning fields.
         input_ctx = {
             "case_id": get_case_id(gt),
             "task": task,
-            "patient": gt.get("patient", {}),
-            "clinical_data": gt.get("clinical_data", {}),
-            "biopsy_results": gt.get("biopsy_results", {}),
+            "clinical_data": pred.get("clinical_data", {}),
             "expected_decision": gt_decision,
             "expected_confidence": gt.get("confidence"),
-            "expected_repeat_test": gt.get("repeat_test"),
         }
         actual = {
             "decision": pred_decision,
             "confidence": pred.get("confidence"),
-            "repeat_test": pred.get("repeat_test"),
             "free_text": pred_text,
         }
         expected = {
             "decision": gt_decision,
             "confidence": gt.get("confidence"),
-            "repeat_test": gt.get("repeat_test"),
             "free_text": gt_text,
         }
 
@@ -1531,16 +1573,20 @@ def aggregate_recurrence_metrics(rows: list[dict]) -> dict:
         for h in TD_AUC_HORIZONS_MONTHS
     }
     td_auc_values = [v for v in td_auc.values() if v is not None]
+    c_index = concordance_index(times, preds, events)
 
     return {
         "n_cases": n,
         "n_evaluated": len(evaluated),
         "mean_case_score": mean_case_score,
+        # Task 3 is ranked on the concordance index alone; the mean case score
+        # is reported for analysis but does not feed the leaderboard.
+        "ranking_score": c_index,
         "recurrence_event_accuracy": (mean(int(a == b) for a, b in event_pairs) if event_pairs else None),
         "mean_event_score": (mean(event_scores) if event_scores else None),
         "mean_time_score": (mean(time_scores) if time_scores else None),
         "event1_time_mae_months": (mean(maes) if maes else None),
-        "concordance_index": concordance_index(times, preds, events),
+        "concordance_index": c_index,
         "time_dependent_auc": td_auc,
         "mean_time_dependent_auc": (mean(td_auc_values) if td_auc_values else None),
         "mean_rationale_score": (mean(rationale_scores) if rationale_scores else None),
@@ -1558,15 +1604,19 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
 
     mean_case_score = mean(r["case_score"] for r in rows)
 
-    decisions = [
-        (r.get("gt_decision"), r.get("pred_decision"))
-        for r in rows
-        if r.get("gt_decision") is not None and r.get("pred_decision") is not None
-    ]
-    y_true = [g for g, _ in decisions]
-    y_pred = [p for _, p in decisions]
-    n_correct = sum(int(r.get("decision_score") == 1.0) for r in rows)
-    n_incorrect = len(decisions) - n_correct
+    # The task decides which F1 goes on the leaderboard, so read it off the
+    # rows rather than inferring it from which labels happen to be present.
+    is_treatment = all(r.get("task") == "treatment" for r in rows)
+
+    # Every case with a known ground-truth decision is graded. Cases whose
+    # prediction is absent or schema-invalid get a sentinel label so they count
+    # as errors: dropping them would make skipping a hard case free.
+    graded = [r for r in rows if r.get("gt_decision") is not None]
+    y_true = [r["gt_decision"] for r in graded]
+    y_pred = [r.get("pred_decision") or MISSING_DECISION_LABEL for r in graded]
+    n_evaluated = sum(1 for r in graded if r.get("pred_decision") is not None)
+    n_correct = sum(int(r.get("decision_score") == 1.0) for r in graded)
+    n_incorrect = len(graded) - n_correct
 
     conf_pairs = [
         (CONF_MAP[r["gt_biopsy_decision_conf"]], CONF_MAP[r["pred_biopsy_decision_conf"]])
@@ -1592,10 +1642,12 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
 
     out = {
         "n_cases": n,
-        "n_evaluated": len(decisions),
+        "n_evaluated": n_evaluated,
         "n_decision_correct": n_correct,
         "n_decision_incorrect": n_incorrect,
         "mean_case_score": mean_case_score,
+        # Leaderboard ranking score, filled in below once the F1 is known.
+        "ranking_score": None,
         "decision_accuracy": None,
         "decision_f1_yes": None,
         "decision_weighted_f1": None,
@@ -1624,16 +1676,28 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
 
     if y_true:
         out["decision_accuracy"] = float(accuracy_score(y_true, y_pred))
-        if set(y_true) <= VALID_BIOPSY_DECISIONS and set(y_pred) <= VALID_BIOPSY_DECISIONS:
+        if is_treatment:
+            # Support-weighted F1 over the four treatment classes. Restricting
+            # `labels` keeps the sentinel out of the class list while still
+            # letting it cost the true class its recall.
             try:
-                out["decision_f1_yes"] = float(f1_score(y_true, y_pred, pos_label="yes", zero_division=0))
-            except Exception:
-                out["decision_f1_yes"] = None
-        else:
-            try:
-                out["decision_weighted_f1"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
+                out["decision_weighted_f1"] = float(f1_score(
+                    y_true, y_pred,
+                    labels=sorted(VALID_TREATMENT_DECISIONS),
+                    average="weighted", zero_division=0,
+                ))
             except Exception:
                 out["decision_weighted_f1"] = None
+        else:
+            # Positive-class F1 for biopsy 'yes'. average=None with an explicit
+            # single label avoids the binary-average restriction, which the
+            # sentinel label would otherwise trip.
+            try:
+                out["decision_f1_yes"] = float(f1_score(
+                    y_true, y_pred, labels=["yes"], average=None, zero_division=0,
+                )[0])
+            except Exception:
+                out["decision_f1_yes"] = None
         out["decision_classification_report"] = classification_report(
             y_true, y_pred, labels=sorted(set(y_true) | set(y_pred)), zero_division=0,
         )
@@ -1657,6 +1721,13 @@ def compute_aggregate_metrics(rows: list[dict]) -> dict:
                 out["variable_weight_weighted_kappa"] = k if k == k else None
             except Exception:
                 out["variable_weight_weighted_kappa"] = None
+
+    # Leaderboard ranking score: the mean case score and the task's decision F1
+    # contribute equally. F1 for the positive class on Task 1, support-weighted
+    # F1 across the four treatment classes on Task 2.
+    task_f1 = out["decision_weighted_f1"] if is_treatment else out["decision_f1_yes"]
+    if task_f1 is not None:
+        out["ranking_score"] = (mean_case_score + task_f1) / 2.0
 
     return out
 
@@ -1741,10 +1812,7 @@ def write_json(obj: Any, path: Path) -> None:
 def run() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    targets = load_ground_truth_records(
-        GROUND_TRUTH_DIR,
-        GROUND_TRUTH_FILENAME,
-    )
+    targets = load_ground_truth_records(GROUND_TRUTH_DIR, TASK_ID)
     if not targets:
         sys.exit(f"No target records found under {GROUND_TRUTH_DIR}")
 
@@ -1755,7 +1823,6 @@ def run() -> None:
 
     ctx = {
         "ground_truth": {get_case_id(gt): gt for gt in targets if get_case_id(gt)},
-        "pk_to_case": load_pk_to_case(),
         "tool_metric": build_tool_metric(),
         "rationale_judge": build_rationale_judge(),
     }
@@ -1845,6 +1912,7 @@ def run() -> None:
         print(f"Time-dependent AUC: {td_auc_str or 'n/a'}")
         print(f"Mean time-dependent AUC: {fmt(aggregate.get('mean_time_dependent_auc'))}")
         print(f"Mean reasoning score: {fmt(aggregate.get('mean_rationale_score'))}")
+        print(f"Ranking score (concordance index): {fmt(aggregate.get('ranking_score'))}")
         n_eval = aggregate.get('n_evaluated', 0)
         print(f"Cases evaluated: {n_eval} (out of {aggregate.get('n_cases', 0)})")
     else:
@@ -1862,6 +1930,7 @@ def run() -> None:
         print(f"Mean section grounding score: {fmt(aggregate.get('mean_section_grounding_score'))}")
         print(f"Mean rationale score: {fmt(aggregate.get('mean_rationale_score'))}")
         print(f"Mean case score (among gate passed cases): {fmt(aggregate.get('mean_case_score_among_gate_passed'))}")
+        print(f"Ranking score: {fmt(aggregate.get('ranking_score'))}")
     print()
     print("Saved:")
     print(f"  {metrics_path}")

@@ -17,6 +17,8 @@ needs no network at runtime, which is what Grand Challenge requires.
 ## Leaderboard scoring
 
 All leaderboard metrics range from 0 to 1, with higher scores indicating better performance.
+Each task's leaderboard value is reported as `ranking_score` in
+`aggregate_metrics.json` and in the `aggregates` block of `metrics.json`.
 
 ### Task 1: Biopsy decision
 
@@ -47,7 +49,7 @@ The Task 2 ranking score is the average of:
 The Task 3 leaderboard is ranked using Harrell's Concordance Index (C-index).
 
 The C-index measures how well a model ranks patients according to their risk of biochemical recurrence. Rather than requiring the exact recurrence time to be predicted, it evaluates whether patients predicted to recur earlier do, in fact, experience recurrence before patients predicted to recur later. The metric naturally accounts for censored patients by considering only comparable patient pairs.
-The evaluator also reports a Task 3 mean case score based on event-status agreement, time dependent AUC and explanation quality (not compared to urologist derived ground truth). However, this per-case score is provided for later analysis and is not part of the Task 3 leaderboard ranking.
+The evaluator also reports a Task 3 mean case score based on event-status agreement, time dependent AUC and explanation quality (not compared to urologist derived ground truth). However, this per-case score is provided for later analysis and is not part of the Task 3 leaderboard ranking, so `ranking_score` for Task 3 is simply the C-index.
 
 ## How Input Handling Works
 
@@ -79,12 +81,18 @@ Only the *scoring* and the *emitted metrics* differ.
    which resolves the socket's `relative_path` under the job pk directory and
    reads it with `load_json_file`. Agent outputs are always read from **files**,
    never from inline values.
-4. **Case id only.** `pk_hash_to_case_map.json` is used for one thing: turning a
-   job `pk` into the ground-truth `case_id`. It plays no part in locating files.
+4. **Case id from the job itself.** The handler reads `case_id` from the job's
+   inline `structured-prompt` input value. Together with the interface key
+   (which gives the task) that is enough to locate
+   `ground_truth/<task>/<case_id>/`, so the evaluator is **fully pk-agnostic**:
+   no `pk_hash_to_case_map.json` is read, and a job pk is only ever used to find
+   that job's own output files.
 
 Jobs whose interface belongs to a different task than `TASK_ID` are skipped.
+Jobs with no `case_id` in their structured prompt are skipped with a warning.
 Ground-truth cases with no matching job are reported as missing candidates with
-`case_score = 0` rather than crashing.
+`case_score = 0` rather than crashing, and they still count as errors in the
+decision F1 — skipping a hard case is never free.
 
 
 
@@ -105,13 +113,14 @@ evaluation/
 │
 ├── ground_truth/
 │   ├── section_variable_mapping.json
-│   ├── task1/<case_id>/pathologist_response.json
-│   ├── task2/<case_id>/pathologist_response.json
+│   ├── task1/<case_id>/prostate-biopsy-decision.json
+│   ├── task1/<case_id>/prostate-biopsy-decision-reasoning.json
+│   ├── task2/<case_id>/prostate-treatment-decision.json
+│   ├── task2/<case_id>/prostate-treatment-decision-reasoning.json
 │   └── task3/<case_id>/prostate-time-to-recurrence-or-last-follow-up.json
 │
 ├── test/input/
 │   ├── predictions.json              # Grand Challenge job dump (all tasks)
-│   ├── pk_hash_to_case_map.json      # job pk -> taskN/<case_id>
 │   └── <job_pk>/<relative_path>.json # agent output files, one dir per job
 │
 ├── results/                          # generated local outputs, gitignored
@@ -122,8 +131,8 @@ evaluation/
 
 | Mount | Mode | Contents |
 | --- | --- | --- |
-| `/input/` | read-only | `predictions.json`, `pk_hash_to_case_map.json`, and one directory per job pk holding that job's output files |
-| `/opt/ml/input/data/ground_truth/` | read-only | `taskN/<case_id>/` pathologist responses (Task 1/2) or recurrence outcome (Task 3) plus `section_variable_mapping.json` |
+| `/input/` | read-only | `predictions.json` and one directory per job pk holding that job's output files |
+| `/opt/ml/input/data/ground_truth/` | read-only | `taskN/<case_id>/` decision + reasoning files (Task 1/2) or the recurrence outcome (Task 3) plus `section_variable_mapping.json` |
 | `/output/` | writable | `metrics.json`, `aggregate_metrics.json`, `per_case_results.csv`, `evaluation_results_summary.json` |
 | `/tmp/` | writable | scratch only; nothing here is persisted |
 
@@ -256,8 +265,8 @@ docker run --rm \
   chimera-evaluator:latest
 ```
 
-All other paths (`INPUT_DIRECTORY`, `PREDICTIONS_FILE`, `PK_CASE_MAP_FILE`,
-`SECTION_MAPPING_FILE`, `EVAL_OUTPUT_DIR`) already have correct defaults baked
+All other paths (`INPUT_DIRECTORY`, `PREDICTIONS_FILE`, `SECTION_MAPPING_FILE`,
+`EVAL_OUTPUT_DIR`) already have correct defaults baked
 into the image. To disable the judge entirely, add `-e USE_RATIONALE_JUDGE=0`
 and omit `--gpus`.
 
@@ -313,7 +322,21 @@ Cases that pass the decision gate receive a weighted component score.
 If the rationale judge is disabled or unavailable, the non-rationale weights are
 renormalized through the fixed no-judge weighting shown above.
 
+The rationale judge compares the agent's `free_text` against the pathologist's
+`free_text`, the expected decision and the expected confidence. The clinical
+context it reasons over is taken from the job's own inline clinical-data input
+socket, since the ground truth carries only the decision and the four reasoning
+fields.
+
 ### Tool-Use Policy
+
+`reveal_sequence` is a flat, ordered list naming the sections the agent actually
+consulted. Exactly six names are recognised:
+
+```text
+radiology_report  laboratory_results  psa_trend
+pathology_report  previous_notes      family_history
+```
 
 The tool score penalizes unnecessary reveals only:
 
@@ -322,7 +345,8 @@ score = |agent_revealed ∩ pathologist_revealed| / |agent_revealed|
 ```
 
 Missing pathologist reveals are not penalized. Extra agent reveals are
-penalized uniformly.
+penalized uniformly, and a name outside the six above counts as an extra
+reveal. Order is ignored, and repeated reveals of the same section count once.
 
 ### Section-Grounding Policy
 
@@ -330,6 +354,12 @@ Section grounding checks whether variables weighted above `not_used` are
 supported by sections the agent actually revealed, using
 [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json).
 Always-available variables such as `psa` and `age` are exempt.
+
+A variable whose source sections lie outside the six-name reveal vocabulary
+(currently only `comorbidity`, sourced from the comorbidities section) cannot be
+grounded by any submission, so it is excluded from the score rather than counted
+against the agent. Such variables are listed under `ungradable_variables` in
+`evaluation_results_summary.json`.
 
 ## Task 3: Biochemical Recurrence
 
@@ -378,6 +408,7 @@ Task 1 / Task 2:
 
 | Metric | Meaning |
 | --- | --- |
+| `ranking_score` | **Leaderboard metric.** Mean of `mean_case_score` and the task's decision F1 |
 | `mean_case_score` | Mean case score across all cases, including gate failures |
 | `decision_accuracy` | Decision-match accuracy |
 | `decision_f1_yes` | Task 1 positive-class F1 for biopsy `yes` |
@@ -394,10 +425,16 @@ Task 2 uses **weighted** F1 rather than macro F1 so that each class contributes
 in proportion to how often it actually occurs, which is the more honest summary
 on the imbalanced treatment-label distribution.
 
+Both F1 metrics are computed over **every** case that has a ground-truth
+decision. A case whose prediction is missing or fails schema validation is
+scored against a sentinel label, so it costs the true class its recall instead
+of quietly dropping out of the metric.
+
 Task 3 (biochemical recurrence) reports a different set:
 
 | Metric | Meaning |
 | --- | --- |
+| `ranking_score` | **Leaderboard metric.** Equal to `concordance_index` |
 | `mean_case_score` | Mean case score across all Task 3 cases |
 | `recurrence_event_accuracy` | Fraction of cases with correct `event` |
 | `mean_event_score` | Mean event-agreement score |
@@ -410,33 +447,50 @@ Task 3 (biochemical recurrence) reports a different set:
 
 ## Adding or Replacing Data
 
-Ground truth uses the CHIMERA per-case directory layout:
+Ground truth uses the CHIMERA per-case directory layout. For Task 1 and Task 2
+it is split across the **same two files the agent submits**, so ground truth and
+submission are directly comparable:
 
 ```text
-ground_truth/task1/<case_id>/pathologist_response.json
-ground_truth/task2/<case_id>/pathologist_response.json
+ground_truth/task1/<case_id>/prostate-biopsy-decision.json
+ground_truth/task1/<case_id>/prostate-biopsy-decision-reasoning.json
+ground_truth/task2/<case_id>/prostate-treatment-decision.json
+ground_truth/task2/<case_id>/prostate-treatment-decision-reasoning.json
 ground_truth/task3/<case_id>/prostate-time-to-recurrence-or-last-follow-up.json
 ```
 
-The case directory name is the authoritative `case_id`. For Task 1 and Task 2
-the evaluator accepts a flat list, a task-keyed list such as
-`{"biopsy_decision": [...]}`, or a single record object. Task 3 ground truth is a
-bare `{"months_to_recurrence": ..., "event": ...}` object.
+The case directory name is the authoritative `case_id`; the files carry none.
+A case missing any of its required files is skipped with a warning.
+
+The decision file is a bare JSON value — `"yes"` / `"no"` for Task 1, one of the
+four treatment labels for Task 2. The reasoning file is an object with exactly
+four keys:
+
+```json
+{
+  "confidence": "clear",
+  "variable_weights": {"pirads": "decisive", "psa": "noted"},
+  "reveal_sequence": ["radiology_report", "laboratory_results"],
+  "free_text": "PI-RADS 5 with high PSA density ..."
+}
+```
+
+Task 3 ground truth is a bare `{"months_to_recurrence": ..., "event": ...}`
+object and is unchanged.
 
 Agent outputs come from `test/input/predictions.json` (a Grand Challenge job
 dump) plus one directory per job pk holding that job's output files:
 
 ```text
 test/input/predictions.json
-test/input/pk_hash_to_case_map.json
 test/input/<job_pk>/<relative_path>.json
 ```
 
 The `<relative_path>` values come from each output socket in `predictions.json`,
-so the filenames must match what that file declares. `pk_hash_to_case_map.json`
-maps each job `pk` to `taskN/<case_id>` and is used only to recover the
-ground-truth case id. Ground-truth cases with no matching job are reported as
-missing candidates.
+so the filenames must match what that file declares. Each job's `case_id` is
+read from its inline `structured-prompt` input value; no pk-to-case mapping file
+is used. Ground-truth cases with no matching job are reported as missing
+candidates and count as decision errors.
 
 Keep [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json)
 updated when adding variables that should participate in section-grounding

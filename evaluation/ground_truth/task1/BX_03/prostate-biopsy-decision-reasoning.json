@@ -1,0 +1,20 @@
+{
+  "confidence": "clear",
+  "variable_weights": {
+    "pirads": "decisive",
+    "psad": "important",
+    "psa": "noted",
+    "dre": "noted",
+    "cspca": "noted",
+    "age": "not_used",
+    "fh": "important",
+    "vol": "noted",
+    "bx": "not_used",
+    "comorbidity": "not_used"
+  },
+  "reveal_sequence": [
+    "radiology_report",
+    "laboratory_results"
+  ],
+  "free_text": "PI-RADS \u2264 2 with PSA density < 0.20 and no family history. All criteria met to omit biopsy. Continue PSA surveillance."
+}

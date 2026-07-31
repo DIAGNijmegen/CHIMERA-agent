@@ -6,7 +6,7 @@
 # by the Grand Challenge platform (https://grand-challenge.org/).
 #
 # Runtime contract (Grand-Challenge layout — see external/example_evaluation_method):
-#   /input/                          (read-only)  predictions.json + pk_hash_to_case_map.json
+#   /input/                          (read-only)  predictions.json
 #   /opt/ml/input/data/ground_truth/ (read-only)  taskN/case_id/pathologist_response.json
 #                                                 taskN/case_id/prostate-time-to-recurrence-or-last-follow-up.json
 #                                                 section_variable_mapping.json
@@ -111,7 +111,6 @@ ENV TASK_ID=task1 \
     GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth/task1 \
     INPUT_DIRECTORY=/input \
     PREDICTIONS_FILE=/input/predictions.json \
-    PK_CASE_MAP_FILE=/input/pk_hash_to_case_map.json \
     SECTION_MAPPING_FILE=/opt/ml/input/data/ground_truth/section_variable_mapping.json \
     EVAL_OUTPUT_DIR=/output
 # DeepEval / misc ----------------------------------------------------------
