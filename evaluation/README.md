@@ -17,8 +17,10 @@ needs no network at runtime, which is what Grand Challenge requires.
 ## Leaderboard scoring
 
 All leaderboard metrics range from 0 to 1, with higher scores indicating better performance.
-Each task's leaderboard value is reported as `ranking_score` in
-`aggregate_metrics.json` and in the `aggregates` block of `metrics.json`.
+The evaluator computes each task independently and writes one phase-level
+`metrics.json`. The official score is `aggregates.overall_ranking_score`, the
+equal-weighted mean of the `ranking_score` values for the tasks present in the
+phase.
 
 ### Task 1: Biopsy decision
 
@@ -49,7 +51,18 @@ The Task 2 ranking score is the average of:
 The Task 3 leaderboard is ranked using Harrell's Concordance Index (C-index).
 
 The C-index measures how well a model ranks patients according to their risk of biochemical recurrence. Rather than requiring the exact recurrence time to be predicted, it evaluates whether patients predicted to recur earlier do, in fact, experience recurrence before patients predicted to recur later. The metric naturally accounts for censored patients by considering only comparable patient pairs.
-The evaluator also reports a Task 3 mean case score based on event-status agreement, time dependent AUC and explanation quality (not compared to urologist derived ground truth). However, this per-case score is provided for later analysis and is not part of the Task 3 leaderboard ranking, so `ranking_score` for Task 3 is simply the C-index.
+The evaluator also reports Task 3 case scores and time-dependent AUC for
+analysis. They do not affect the leaderboard: Task 3 `ranking_score` is exactly
+the C-index.
+
+The Grand Challenge score JSONPath is:
+
+```text
+aggregates.overall_ranking_score
+```
+
+Task-specific result columns can use `aggregates.task1.ranking_score`,
+`aggregates.task2.ranking_score`, and `aggregates.task3.ranking_score`.
 
 ## How Input Handling Works
 
@@ -81,18 +94,15 @@ Only the *scoring* and the *emitted metrics* differ.
    which resolves the socket's `relative_path` under the job pk directory and
    reads it with `load_json_file`. Agent outputs are always read from **files**,
    never from inline values.
-4. **Case id from the job itself.** The handler reads `case_id` from the job's
-   inline `structured-prompt` input value. Together with the interface key
-   (which gives the task) that is enough to locate
-   `ground_truth/<task>/<case_id>/`, so the evaluator is **fully pk-agnostic**:
-   no `pk_hash_to_case_map.json` is read, and a job pk is only ever used to find
-   that job's own output files.
+4. **Case id from the input socket-value PK.** Production input files have
+  `value: null`. The handler joins the structured-prompt input's `pk` against
+  the read-only `debug_archive_pks.csv` supplied with the GC ground truth. It
+  deliberately does not match the algorithm job PK or archive-item PK.
 
-Jobs whose interface belongs to a different task than `TASK_ID` are skipped.
-Jobs with no `case_id` in their structured prompt are skipped with a warning.
-Ground-truth cases with no matching job are reported as missing candidates with
-`case_score = 0` rather than crashing, and they still count as errors in the
-decision F1 — skipping a hard case is never free.
+All recognized task interfaces in `predictions.json` are evaluated in one run.
+Every recognized job must resolve to exactly one case, every mapped phase case
+must have ground truth under `ground_truth/<task>/<case_id>/`, and duplicate
+jobs for the same task/case are rejected.
 
 
 
@@ -112,12 +122,9 @@ evaluation/
 │   └── requirements.txt              # Python dependencies
 │
 ├── ground_truth/
+│   ├── debug_archive_pks.csv
 │   ├── section_variable_mapping.json
-│   ├── task1/<case_id>/prostate-biopsy-decision.json
-│   ├── task1/<case_id>/prostate-biopsy-decision-reasoning.json
-│   ├── task2/<case_id>/prostate-treatment-decision.json
-│   ├── task2/<case_id>/prostate-treatment-decision-reasoning.json
-│   └── task3/<case_id>/prostate-time-to-recurrence-or-last-follow-up.json
+│   └── taskN/<case_id>/ decision, reasoning, and clinical-data JSON files
 │
 ├── test/input/
 │   ├── predictions.json              # Grand Challenge job dump (all tasks)
@@ -154,21 +161,16 @@ For a deterministic smoke test with no GPU and no judge, set
 ```bash
 cd ~/CHIMERA-agent/evaluation
 
-# Run Task 1 on the default GPU from .env or GPU_DEVICE_ID=0.
-./do_test_run.sh task1
-
-# Run all three tasks sequentially
-./do_test_run.sh task1 task2 task3
+# Run the complete mixed-task phase on the default GPU.
+./do_test_run.sh
 ```
 
-`do_test_run.sh` builds `chimera-evaluator:latest` once, validates all requested
-task directories up front, then runs each task **offline** (`--network none`),
-just like Grand Challenge. Results are written to separate task directories:
+`do_test_run.sh` builds `chimera-evaluator:latest`, then evaluates the complete
+phase once **offline** (`--network none`), just like Grand Challenge. The
+Grand Challenge metrics file is written locally as:
 
 ```text
-results/task1/
-results/task2/
-results/task3/
+results/metrics.json
 ```
 
 ## Configuration
@@ -179,7 +181,6 @@ Export variables inline or copy [.env.example](.env.example) to `.env`;
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DOCKER_IMAGE_TAG` | `chimera-evaluator:latest` | Image tag used by all scripts |
-| `TASK_ID` | `task1` | Task to run when no positional task args are provided |
 | `GPU_DEVICE_ID` | `0` | Host GPU exposed to Docker when judging is enabled |
 | `JUDGE_MODEL` | `gemma4:e4b` | Ollama model baked in at build time and used at runtime |
 | `USE_RATIONALE_JUDGE` | `1` | `0` disables Ollama and runs deterministic metrics only |
@@ -189,7 +190,7 @@ Examples:
 
 ```bash
 # Deterministic, CPU-only smoke test.
-USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1
+USE_RATIONALE_JUDGE=0 ./do_test_run.sh
 
 # Build with a different judge model baked in.
 JUDGE_MODEL=gemma3:4b ./do_build.sh
@@ -216,16 +217,15 @@ image. This step needs network access; the resulting runs do not.
 ### Local Test Run
 
 ```bash
-./do_test_run.sh task1
-./do_test_run.sh task1 task2
-GPU_DEVICE_ID=0 ./do_test_run.sh task1 task2
+./do_test_run.sh
+GPU_DEVICE_ID=0 ./do_test_run.sh
 ```
 
-For each requested task, the script mounts:
+The script mounts:
 
 - [test/input](test/input) as `/input:ro`
 - [ground_truth](ground_truth) as `/opt/ml/input/data/ground_truth:ro`
-- `results/<task>` as `/output`
+- `results` as `/output`
 - a throwaway Docker volume as `/tmp`
 
 It runs with `--network none`, then fixes file ownership afterwards from inside
@@ -251,7 +251,7 @@ The scripts are the preferred entry point, but this is the equivalent shape for
 a single task on GPU 1:
 
 ```bash
-mkdir -p results/task1
+mkdir -p results
 
 docker run --rm \
   --gpus "device=1" \
@@ -259,9 +259,8 @@ docker run --rm \
   --network none \
   -v "$PWD/test/input:/input:ro" \
   -v "$PWD/ground_truth:/opt/ml/input/data/ground_truth:ro" \
-  -v "$PWD/results/task1:/output" \
-  -e TASK_ID=task1 \
-  -e GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth/task1 \
+  -v "$PWD/results:/output" \
+  -e GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth \
   chimera-evaluator:latest
 ```
 
@@ -272,8 +271,8 @@ and omit `--gpus`.
 
 ## Outputs
 
-Each task writes these files under `results/<task>/` locally or `/output/` in
-the container:
+The phase evaluation writes these files under `results/` locally and `/output/`
+in the container:
 
 | File | Purpose |
 | --- | --- |
@@ -285,9 +284,9 @@ the container:
 ## Evaluation Logic
 
 Agent outputs are read from the per-job files described in
-[How Input Handling Works](#how-input-handling-works). The evaluator scores every
-job belonging to `TASK_ID`, then reports any ground-truth case that had no job as
-a missing candidate with `case_score = 0`.
+[How Input Handling Works](#how-input-handling-works). The evaluator groups all
+recognized jobs by task, computes task-specific aggregates, and gives every
+task present in the phase equal weight in `overall_ranking_score`.
 
 ### Stage 1: Decision Gate (Task 1 / Task 2)
 
@@ -323,10 +322,9 @@ If the rationale judge is disabled or unavailable, the non-rationale weights are
 renormalized through the fixed no-judge weighting shown above.
 
 The rationale judge compares the agent's `free_text` against the pathologist's
-`free_text`, the expected decision and the expected confidence. The clinical
-context it reasons over is taken from the job's own inline clinical-data input
-socket, since the ground truth carries only the decision and the four reasoning
-fields.
+`free_text`, expected decision, confidence, and clinical context. Since GC
+input sockets are file-backed with `value: null`, clinical context is loaded
+from the corresponding ground-truth case directory.
 
 ### Tool-Use Policy
 
@@ -454,9 +452,12 @@ submission are directly comparable:
 ```text
 ground_truth/task1/<case_id>/prostate-biopsy-decision.json
 ground_truth/task1/<case_id>/prostate-biopsy-decision-reasoning.json
+ground_truth/task1/<case_id>/prostate-biopsy-decision-clinical-data.json
 ground_truth/task2/<case_id>/prostate-treatment-decision.json
 ground_truth/task2/<case_id>/prostate-treatment-decision-reasoning.json
+ground_truth/task2/<case_id>/prostate-treatment-decision-clinical-data.json
 ground_truth/task3/<case_id>/prostate-time-to-recurrence-or-last-follow-up.json
+ground_truth/task3/<case_id>/prostate-time-to-recurrence-or-last-follow-up-clinical-data.json
 ```
 
 The case directory name is the authoritative `case_id`; the files carry none.
@@ -487,10 +488,9 @@ test/input/<job_pk>/<relative_path>.json
 ```
 
 The `<relative_path>` values come from each output socket in `predictions.json`,
-so the filenames must match what that file declares. Each job's `case_id` is
-read from its inline `structured-prompt` input value; no pk-to-case mapping file
-is used. Ground-truth cases with no matching job are reported as missing
-candidates and count as decision errors.
+so the filenames must match what that file declares. Case IDs are resolved by
+joining each structured-prompt socket-value PK to the GC-provided
+`debug_archive_pks.csv`. The evaluator reads that file but never modifies it.
 
 Keep [ground_truth/section_variable_mapping.json](ground_truth/section_variable_mapping.json)
 updated when adding variables that should participate in section-grounding
@@ -502,11 +502,11 @@ updated when adding variables that should participate in section-grounding
 # Build only.
 ./do_build.sh
 
-# Run all three tasks on GPU 3.
-GPU_DEVICE_ID=3 ./do_test_run.sh task1 task2 task3
+# Run the complete phase on GPU 3.
+GPU_DEVICE_ID=3 ./do_test_run.sh
 
 # Run deterministic metrics only (no GPU / no judge).
-USE_RATIONALE_JUDGE=0 ./do_test_run.sh task1 task2 task3
+USE_RATIONALE_JUDGE=0 ./do_test_run.sh
 
 # Rebuild with a different judge model baked into the image.
 JUDGE_MODEL=gemma3:4b ./do_build.sh

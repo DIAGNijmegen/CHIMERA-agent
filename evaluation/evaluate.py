@@ -14,13 +14,12 @@ and every agent artefact is read from a real file whose location is built from
 the job pk plus the output socket's relative_path. Only the scoring and the
 emitted metrics differ from the reference method.
 
-Evaluation is fully pk-agnostic. A job's task comes from its interface key (the
-sorted tuple of its input socket slugs) and its case id comes from the
-"case_id" field of its structured-prompt input, so no pk -> case mapping file is
-read. Ground truth is loaded per case from ground_truth/<task_id>/<case_id>/,
-which holds the same split decision/reasoning files the agent itself submits.
-Ground-truth cases with no matching job are reported as missing candidates
-rather than crashing.
+A job's task comes from its interface key (the sorted tuple of its input socket
+slugs). File-backed inputs have value=null, so the structured-prompt socket-value
+pk is joined against debug_archive_pks.csv to recover the case id. Ground truth
+is loaded per task and case from ground_truth/<task_id>/<case_id>/. Ground-truth
+cases with no matching job are reported as missing candidates rather than
+silently dropped.
 
 Scoring:
 
@@ -60,8 +59,10 @@ Grand-Challenge container contract (see external/example_evaluation_method):
                                                 → <job_pk>/<relative_path>
                                                   (or <job_pk>/output/<relative_path>)
     /opt/ml/input/data/ground_truth/ (read-only) ground-truth tarball
-                                                → $TASK_ID/<case_id>/<decision>.json
-                                                → $TASK_ID/<case_id>/<reasoning>.json
+                                                → taskN/<case_id>/<decision>.json
+                                                → taskN/<case_id>/<reasoning>.json
+                                                → taskN/<case_id>/<clinical-data>.json
+                                                → debug_archive_pks.csv
                                                 → section_variable_mapping.json
     /output/                       (writable)   metrics.json + the reports above
 
@@ -75,8 +76,7 @@ Or directly (Ollama must be reachable at OLLAMA_BASE_URL):
 
 Environment variable overrides:
 
-    TASK_ID            task directory name         (default: task1)
-    GROUND_TRUTH_DIR   ground-truth case directory (default: ground_truth/$TASK_ID)
+    GROUND_TRUTH_DIR   ground-truth root directory (default: ground_truth/)
     INPUT_DIRECTORY    job dump + job output dirs  (default: test/input)
     PREDICTIONS_FILE   agent predictions dump      (default: $INPUT_DIRECTORY/predictions.json)
     EVAL_OUTPUT_DIR    output directory            (default: results/)
@@ -114,11 +114,9 @@ import requests
 
 ROOT = Path(__file__).resolve().parent
 
-TASK_ID = os.getenv("TASK_ID", "task1")
-
 GROUND_TRUTH_DIR = Path(os.getenv(
     "GROUND_TRUTH_DIR",
-    str(ROOT / "ground_truth" / TASK_ID),
+    str(ROOT / "ground_truth"),
 ))
 # Root of the Grand-Challenge input mount. Job outputs live under
 # INPUT_DIRECTORY/<job_pk>/ and are located via the output socket relative_path.
@@ -136,7 +134,7 @@ OUTPUT_DIR = Path(os.getenv(
 ))
 SECTION_MAPPING_FILE = Path(os.getenv(
     "SECTION_MAPPING_FILE",
-    str(GROUND_TRUTH_DIR.parent / "section_variable_mapping.json"),
+    str(GROUND_TRUTH_DIR / "section_variable_mapping.json"),
 ))
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
@@ -198,7 +196,7 @@ SECTION_KEY_TO_REVEAL_NAME = {
 
 # Interface keys: the sorted tuple of a job's input socket slugs, exactly as the
 # reference evaluation method identifies an interface. Used to pick the handler
-# and to skip jobs belonging to a different task than TASK_ID.
+# and group jobs into task-specific aggregates.
 INTERF0_KEY = (
     "prostate-biopsy-decision-clinical-data",
     "prostate-modality-level-neural-representations",
@@ -238,9 +236,9 @@ TASK3_REASONING_SLUGS = (
 )
 TASK3_CLIN_SLUGS = ("prostate-time-to-recurrence-or-last-follow-up-clin",)
 
-# Input socket slugs carrying the inline clinical context for each task. The
-# ground truth no longer repeats the clinical data, so the rationale judge
-# reads it from the job itself.
+# Input socket slugs used only when a job provides inline clinical context.
+# File-backed production inputs have value=null, so clinical data normally
+# comes from the corresponding ground-truth case directory.
 STRUCTURED_PROMPT_SLUGS = ("structured-prompt",)
 TASK1_CLIN_SLUGS = ("prostate-biopsy-decision-clinical-data",)
 TASK2_CLIN_SLUGS = ("prostate-treatment-decision-clinical-data",)
@@ -262,10 +260,49 @@ GT_FILENAMES = {
     },
 }
 
+CLINICAL_FILENAMES = {
+    "task1": "prostate-biopsy-decision-clinical-data.json",
+    "task2": "prostate-treatment-decision-clinical-data.json",
+    "task3": "prostate-time-to-recurrence-or-last-follow-up-clinical-data.json",
+}
+
+
 
 # --------------------------------------------------------------------------- #
 # JSON / record helpers
 # --------------------------------------------------------------------------- #
+CASE_MAP_FILE = Path(os.getenv(
+    "CASE_MAP_FILE",
+    str(GROUND_TRUTH_DIR / "debug_archive_pks.csv"),
+))
+
+
+def load_case_id_by_input_pk(path: Path) -> dict[str, str]:
+    if not path.exists():
+        sys.exit(f"Missing archive case map: {path}")
+
+    mapping: dict[str, str] = {}
+
+    with path.open("r", encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            case_id = (row.get("case_id") or row.get("patient_title") or "").strip()
+            if not case_id:
+                continue
+
+            raw_pk = row.get("structured-prompt_pk")
+            if not raw_pk:
+                continue
+            pk = str(raw_pk).strip()
+            previous = mapping.get(pk)
+            if previous is not None and previous != case_id:
+                raise RuntimeError(
+                    f"Structured-prompt socket-value PK {pk} maps to both "
+                    f"{previous!r} and {case_id!r}"
+                )
+            mapping[pk] = case_id
+
+    return mapping
+
 
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as f:
@@ -291,7 +328,7 @@ def load_ground_truth_records(root: Path, task_id: str) -> list[dict]:
         sys.exit(f"ground-truth path is not a directory: {root}")
     names = GT_FILENAMES.get(task_id)
     if names is None:
-        sys.exit(f"Unknown TASK_ID {task_id!r}; expected one of {sorted(GT_FILENAMES)}")
+        sys.exit(f"Unknown task id {task_id!r}; expected one of {sorted(GT_FILENAMES)}")
 
     records: list[dict] = []
     for case_dir in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -312,17 +349,27 @@ def load_ground_truth_records(root: Path, task_id: str) -> list[dict]:
             else:
                 record["treatment_recommendation"] = {"primary": decision}
 
+        clinical_path = case_dir / CLINICAL_FILENAMES[task_id]
+        if clinical_path.exists():
+            clinical_data = load_json(clinical_path)
+            record["clinical_data"] = (
+                clinical_data if isinstance(clinical_data, dict) else {}
+            )
+        else:
+            record["clinical_data"] = {}
+            if USE_RATIONALE_JUDGE:
+                print(
+                    f"[warning] {case_dir.name}: missing clinical data; "
+                    "rationale judge will not receive the clinical context"
+                )
+
         record["case_id"] = case_dir.name
         records.append(record)
     return records
 
 
 def _socket_value(values: Any, slugs: tuple[str, ...]) -> Any:
-    """Return the inline `value` of the first socket whose slug is in `slugs`.
-
-    Only used for *input* sockets: Grand Challenge inlines JSON input values in
-    predictions.json, so they have no file in the job output directory.
-    """
+    """Return an inline input value when a socket happens to provide one."""
     for slug in slugs:
         for sv in values or []:
             if isinstance(sv, dict) and sv.get("socket", {}).get("slug") == slug:
@@ -409,7 +456,7 @@ def process(job: dict, ctx: dict) -> dict | None:
 
 def process_interf0(job: dict, ctx: dict) -> dict | None:
     """Task 1 — prostate biopsy decision + reasoning."""
-    case_id = _case_id_for_job(job)
+    case_id = _case_id_for_job(job, ctx)
     if not case_id:
         return None
 
@@ -438,7 +485,7 @@ def process_interf0(job: dict, ctx: dict) -> dict | None:
 
 def process_interf1(job: dict, ctx: dict) -> dict | None:
     """Task 2 — prostate treatment decision + reasoning."""
-    case_id = _case_id_for_job(job)
+    case_id = _case_id_for_job(job, ctx)
     if not case_id:
         return None
 
@@ -463,7 +510,7 @@ def process_interf1(job: dict, ctx: dict) -> dict | None:
 
 def process_interf2(job: dict, ctx: dict) -> dict | None:
     """Task 3 — time to biochemical recurrence + reasoning."""
-    case_id = _case_id_for_job(job)
+    case_id = _case_id_for_job(job, ctx)
     if not case_id:
         return None
 
@@ -477,7 +524,8 @@ def process_interf2(job: dict, ctx: dict) -> dict | None:
     result_outcome = load_json_file(location=location_outcome)
     result_reasoning = load_json_file(location=location_reasoning)
 
-    # The clinical context is an input socket, inlined by Grand Challenge.
+    # Inline input values are accepted for compatibility; production inputs
+    # are file-backed and fall back to the clinical copy in ground truth.
     clin = _socket_value(job.get("inputs"), TASK3_CLIN_SLUGS)
 
     outcome = result_outcome if isinstance(result_outcome, dict) else {}
@@ -491,32 +539,44 @@ def process_interf2(job: dict, ctx: dict) -> dict | None:
 
     return _score_job(job, ctx, pred)
 
-
-def _case_id_for_job(job: dict) -> str | None:
-    """Recover the ground-truth case id from the job's structured-prompt input.
-
-    Grand Challenge inlines JSON input values in predictions.json, so this needs
-    no file lookup and no pk -> case mapping: the job is identified entirely by
-    its own interface and payload.
-    """
+def _case_id_for_job(job: dict, ctx: dict) -> str | None:
+    # Keep compatibility with scalar/inline inputs if you introduce one later.
     prompt = _socket_value(job.get("inputs"), STRUCTURED_PROMPT_SLUGS)
-    case_id = prompt.get("case_id") if isinstance(prompt, dict) else None
-    if not case_id:
-        print(
-            f"[warning] job {job.get('pk')} has no case_id in its "
-            f"structured-prompt input; skipping"
-        )
-        return None
-    return str(case_id)
+    if isinstance(prompt, dict) and prompt.get("case_id"):
+        return str(prompt["case_id"])
 
+    # File-backed inputs have value=null. Join their ComponentInterfaceValue
+    # PKs against the mapping exported after archive creation.
+    matches = {
+        ctx["case_id_by_input_pk"][str(sv.get("pk"))]
+        for sv in job.get("inputs", [])
+        if str(sv.get("pk")) in ctx["case_id_by_input_pk"]
+    }
+
+    if len(matches) == 1:
+        return next(iter(matches))
+
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"Job {job.get('pk')} maps to multiple cases: {sorted(matches)}"
+        )
+
+    print(
+        f"[warning] job {job.get('pk')} has no matching input socket-value "
+        "PK in the archive case map; skipping"
+    )
+    return None
 
 def _score_job(job: dict, ctx: dict, pred: dict) -> dict | None:
     """Score one loaded prediction against its ground-truth case."""
     case_id = pred["case_id"]
-    gt = ctx["ground_truth"].get(case_id)
+    task_id = INTERFACE_TASK_ID[get_interface_key(job)]
+    gt = ctx["ground_truth"][task_id].get(case_id)
     if gt is None:
         print(f"[warning] no ground truth for case {case_id} (pk {job.get('pk')}); skipping")
         return None
+    if not pred.get("clinical_data"):
+        pred["clinical_data"] = gt.get("clinical_data", {})
     row = evaluate_case(gt, pred, ctx["tool_metric"], ctx["rationale_judge"])
     attach_kappa_fields(row, gt, pred)
     return row
@@ -1579,8 +1639,8 @@ def aggregate_recurrence_metrics(rows: list[dict]) -> dict:
         "n_cases": n,
         "n_evaluated": len(evaluated),
         "mean_case_score": mean_case_score,
-        # Task 3 is ranked on the concordance index alone; the mean case score
-        # is reported for analysis but does not feed the leaderboard.
+        # Task 3 is ranked on the concordance index alone. Time-dependent AUC
+        # and mean case score are diagnostic and do not feed the leaderboard.
         "ranking_score": c_index,
         "recurrence_event_accuracy": (mean(int(a == b) for a, b in event_pairs) if event_pairs else None),
         "mean_event_score": (mean(event_scores) if event_scores else None),
@@ -1812,45 +1872,124 @@ def write_json(obj: Any, path: Path) -> None:
 def run() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    targets = load_ground_truth_records(GROUND_TRUTH_DIR, TASK_ID)
-    if not targets:
-        sys.exit(f"No target records found under {GROUND_TRUTH_DIR}")
-
     predictions = read_predictions()
+    case_id_by_input_pk = load_case_id_by_input_pk(CASE_MAP_FILE)
+    task_ids = sorted({
+        task_id
+        for job in predictions
+        if (task_id := INTERFACE_TASK_ID.get(get_interface_key(job))) is not None
+    })
+    if not task_ids:
+        raise RuntimeError(
+            "No jobs use a recognized CHIMERA task interface; check predictions.json"
+        )
 
-    print(f"Loaded {len(targets)} target cases")
+    mapping_ctx = {"case_id_by_input_pk": case_id_by_input_pk}
+    phase_case_ids: dict[str, set[str]] = {task_id: set() for task_id in task_ids}
+    for job in predictions:
+        task_id = INTERFACE_TASK_ID.get(get_interface_key(job))
+        if task_id is None:
+            continue
+        case_id = _case_id_for_job(job, mapping_ctx)
+        if case_id is None:
+            raise RuntimeError(
+                f"Job {job.get('pk')} could not be associated with ground truth"
+            )
+        phase_case_ids[task_id].add(case_id)
+
+    targets_by_task: dict[str, list[dict]] = {}
+    for task_id in task_ids:
+        all_targets = load_ground_truth_records(GROUND_TRUTH_DIR / task_id, task_id)
+        targets_by_task[task_id] = [
+            gt for gt in all_targets if get_case_id(gt) in phase_case_ids[task_id]
+        ]
+        found_case_ids = {get_case_id(gt) for gt in targets_by_task[task_id]}
+        missing_case_ids = sorted(phase_case_ids[task_id] - found_case_ids)
+        if missing_case_ids:
+            raise RuntimeError(
+                f"Missing {task_id} ground truth for phase cases: {missing_case_ids}"
+            )
+
+    print(
+        "Loaded target cases: "
+        + ", ".join(
+            f"{task_id}={len(targets_by_task[task_id])}" for task_id in task_ids
+        )
+    )
     print(f"Loaded {len(predictions)} jobs from {PREDICTIONS_FILE}")
 
     ctx = {
-        "ground_truth": {get_case_id(gt): gt for gt in targets if get_case_id(gt)},
+        "ground_truth": {
+            task_id: {
+                get_case_id(gt): gt
+                for gt in targets
+                if get_case_id(gt)
+            }
+            for task_id, targets in targets_by_task.items()
+        },
+        "case_id_by_input_pk": case_id_by_input_pk,
         "tool_metric": build_tool_metric(),
         "rationale_judge": build_rationale_judge(),
     }
 
     print("\nEvaluating cases...")
-    rows: list[dict] = []
-    scored_case_ids: set[str] = set()
+    rows_by_task: dict[str, list[dict]] = {task_id: [] for task_id in task_ids}
+    scored_case_ids: dict[str, set[str]] = {task_id: set() for task_id in task_ids}
     for job in predictions:
-        # Route on the interface key, then skip jobs from the other tasks so a
-        # run stays scoped to TASK_ID (one ground truth / output dir per task).
-        if INTERFACE_TASK_ID.get(get_interface_key(job)) != TASK_ID:
+        task_id = INTERFACE_TASK_ID.get(get_interface_key(job))
+        if task_id is None:
+            print(f"[warning] job {job.get('pk')} has an unknown interface; skipping")
             continue
         row = process(job, ctx)
         if row is None:
             continue
-        rows.append(row)
-        scored_case_ids.add(row["case_id"])
+        case_id = row["case_id"]
+        if case_id in scored_case_ids[task_id]:
+            raise RuntimeError(f"Multiple {task_id} jobs resolved to case {case_id}")
+        rows_by_task[task_id].append(row)
+        scored_case_ids[task_id].add(case_id)
+
+    unscored_tasks = [
+        task_id for task_id, case_ids in scored_case_ids.items() if not case_ids
+    ]
+    if unscored_tasks:
+        raise RuntimeError(
+            f"No jobs were successfully matched and scored for {unscored_tasks}. "
+            "Check CASE_MAP_FILE, task interfaces, and the prediction output paths."
+        )
 
     # Ground-truth cases with no matching job are reported, not skipped.
-    for gt in targets:
-        cid = get_case_id(gt)
-        if cid in scored_case_ids:
-            continue
-        row = evaluate_case(gt, None, ctx["tool_metric"], ctx["rationale_judge"])
-        attach_kappa_fields(row, gt, None)
-        rows.append(row)
+    for task_id, targets in targets_by_task.items():
+        for gt in targets:
+            case_id = get_case_id(gt)
+            if case_id in scored_case_ids[task_id]:
+                continue
+            row = evaluate_case(gt, None, ctx["tool_metric"], ctx["rationale_judge"])
+            attach_kappa_fields(row, gt, None)
+            rows_by_task[task_id].append(row)
 
-    aggregate = compute_aggregate_metrics(rows)
+    task_aggregates = {
+        task_id: compute_aggregate_metrics(rows_by_task[task_id])
+        for task_id in task_ids
+    }
+    missing_ranking_scores = [
+        task_id
+        for task_id, aggregate in task_aggregates.items()
+        if aggregate.get("ranking_score") is None
+    ]
+    if missing_ranking_scores:
+        raise RuntimeError(
+            "Ranking score is undefined for "
+            f"{missing_ranking_scores}; Task 3 requires at least one comparable "
+            "survival pair for its C-index"
+        )
+    aggregate = {
+        **task_aggregates,
+        "overall_ranking_score": mean(
+            task_aggregates[task_id]["ranking_score"] for task_id in task_ids
+        ),
+    }
+    rows = [row for task_id in task_ids for row in rows_by_task[task_id]]
 
     # Strip private-ish fields from the JSON dump for cleanliness, but keep
     # them in the in-memory `rows` for aggregate computation.
@@ -1861,21 +2000,19 @@ def run() -> None:
         }}
         public_rows.append(pr)
 
-    is_recurrence_run = bool(rows) and all(r.get("task") == "recurrence" for r in rows)
-
     summary = {
-        "task_id": TASK_ID,
+        "task_ids": task_ids,
         "ground_truth_dir": str(GROUND_TRUTH_DIR),
         "predictions_file": str(PREDICTIONS_FILE),
         "judge_model": JUDGE_MODEL if USE_RATIONALE_JUDGE else None,
         # Tool use is a Task 1 / Task 2 concept only.
-        "tool_metric": None if is_recurrence_run else (
+        "tool_metric": None if task_ids == ["task3"] else (
             "DeepEval ToolCorrectnessMetric" if ctx["tool_metric"] is not None else "fallback"
         ),
         "rationale_judge_enabled": ctx["rationale_judge"] is not None,
-        "n_target": len(targets),
-        "n_scored": len(scored_case_ids),
-        "aggregate": aggregate,
+        "n_target": sum(len(targets) for targets in targets_by_task.values()),
+        "n_scored": sum(len(case_ids) for case_ids in scored_case_ids.values()),
+        "aggregates": aggregate,
         "per_case": public_rows,
     }
 
@@ -1893,44 +2030,15 @@ def run() -> None:
     # block used for leaderboard ranking plus per-case "results".
     write_json({"aggregates": aggregate, "results": public_rows}, metrics_path)
 
-    # Console summary
-    def fmt(v: Any) -> str:
-        return "n/a" if v is None else (f"{v:.3f}" if isinstance(v, float) else str(v))
-
     print()
-    if aggregate.get("recurrence_event_accuracy") is not None or all(
-        r.get("task") == "recurrence" for r in rows
-    ):
-        print(f"Final case score (all cases): {fmt(aggregate.get('mean_case_score'))}")
-        print(f"Recurrence event accuracy: {fmt(aggregate.get('recurrence_event_accuracy'))}")
-        print(f"Mean event score: {fmt(aggregate.get('mean_event_score'))}")
-        print(f"Mean time score: {fmt(aggregate.get('mean_time_score'))}")
-        print(f"Event=1 time MAE (months): {fmt(aggregate.get('event1_time_mae_months'))}")
-        print(f"Concordance index: {fmt(aggregate.get('concordance_index'))}")
-        td_auc = aggregate.get('time_dependent_auc') or {}
-        td_auc_str = ", ".join(f"{h}={fmt(v)}" for h, v in td_auc.items())
-        print(f"Time-dependent AUC: {td_auc_str or 'n/a'}")
-        print(f"Mean time-dependent AUC: {fmt(aggregate.get('mean_time_dependent_auc'))}")
-        print(f"Mean reasoning score: {fmt(aggregate.get('mean_rationale_score'))}")
-        print(f"Ranking score (concordance index): {fmt(aggregate.get('ranking_score'))}")
-        n_eval = aggregate.get('n_evaluated', 0)
-        print(f"Cases evaluated: {n_eval} (out of {aggregate.get('n_cases', 0)})")
-    else:
-        print(f"Final case score (all cases): {fmt(aggregate.get('mean_case_score'))}")
-        print(f"Decision F1_yes: {fmt(aggregate.get('decision_f1_yes'))}")
-        print(f"Decision weighted F1: {fmt(aggregate.get('decision_weighted_f1'))}")
-        print(f"Decision accuracy: {fmt(aggregate.get('decision_accuracy'))}")
-        n_eval = aggregate.get('n_evaluated', 0)
-        n_corr = aggregate.get('n_decision_correct', 'n/a')
-        n_incorr = aggregate.get('n_decision_incorrect', 'n/a')
-        print(f"Decision correct/incorrect: {n_corr}/{n_incorr} (out of {n_eval} evaluated)")
-        print(f"Confidence weighted kappa: {fmt(aggregate.get('confidence_weighted_kappa'))}")
-        print(f"Variable-weight weighted kappa: {fmt(aggregate.get('variable_weight_weighted_kappa'))}")
-        print(f"Mean tool score: {fmt(aggregate.get('mean_tool_score'))}")
-        print(f"Mean section grounding score: {fmt(aggregate.get('mean_section_grounding_score'))}")
-        print(f"Mean rationale score: {fmt(aggregate.get('mean_rationale_score'))}")
-        print(f"Mean case score (among gate passed cases): {fmt(aggregate.get('mean_case_score_among_gate_passed'))}")
-        print(f"Ranking score: {fmt(aggregate.get('ranking_score'))}")
+    for task_id in task_ids:
+        task_aggregate = task_aggregates[task_id]
+        print(
+            f"{task_id}: cases={task_aggregate.get('n_cases', 0)} "
+            f"evaluated={task_aggregate.get('n_evaluated', 0)} "
+            f"ranking_score={task_aggregate.get('ranking_score'):.3f}"
+        )
+    print(f"Overall ranking score: {aggregate['overall_ranking_score']:.3f}")
     print()
     print("Saved:")
     print(f"  {metrics_path}")

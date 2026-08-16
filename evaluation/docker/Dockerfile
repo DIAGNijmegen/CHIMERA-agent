@@ -117,8 +117,7 @@ ENV JUDGE_MODEL=${JUDGE_MODEL} \
     USE_RATIONALE_JUDGE=1 \
     ALLOW_MODEL_PULL=0
 # Evaluator I/O ------------------------------------------------------------
-ENV TASK_ID=task1 \
-    GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth/task1 \
+ENV GROUND_TRUTH_DIR=/opt/ml/input/data/ground_truth \
     INPUT_DIRECTORY=/input \
     PREDICTIONS_FILE=/input/predictions.json \
     SECTION_MAPPING_FILE=/opt/ml/input/data/ground_truth/section_variable_mapping.json \
